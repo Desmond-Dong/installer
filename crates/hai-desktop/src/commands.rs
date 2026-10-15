@@ -7,6 +7,7 @@ use crate::backend::Backend;
 use crate::command_error::CommandError;
 use crate::diagnostics::Operation;
 use crate::flash_state::FlashState;
+use crate::install_jobs::InstallJobs;
 use hai_core::download::TemporaryImage;
 use hai_core::keep_awake::KeepAwake;
 use hai_core::{
@@ -416,11 +417,15 @@ pub async fn get_utm_haos_release() -> Result<HaosRelease, CommandError> {
 /// Download the HAOS qcow2 image for UTM
 #[tauri::command]
 pub async fn download_utm_image(
+    attempt: String,
     progress_channel: Channel<FlashProgress>,
     pending: tauri::State<'_, PendingUtmImages>,
+    jobs: tauri::State<'_, InstallJobs>,
 ) -> Result<String, CommandError> {
+    let job = jobs.begin(attempt);
     let _awake = keep_awake("Downloading Home Assistant").await;
-    let callback = TauriProgressCallback::new(&progress_channel, "utm_download");
+    let callback =
+        TauriProgressCallback::new(&progress_channel, "utm_download").cancellable(job.cancelled());
 
     // Verify UTM is available before doing any work.
     if let Err(error) = Backend.check_utm_status().await {
@@ -691,10 +696,14 @@ pub async fn proxmox_get_next_vm_id(session: ProxmoxSession) -> Result<u32, Comm
 pub async fn proxmox_create_vm(
     session: ProxmoxSession,
     config: ProxmoxVmConfig,
+    attempt: String,
     progress_channel: Channel<FlashProgress>,
+    jobs: tauri::State<'_, InstallJobs>,
 ) -> Result<ProxmoxVmResult, CommandError> {
+    let job = jobs.begin(attempt);
     let _awake = keep_awake("Installing Home Assistant on Proxmox").await;
-    let callback = TauriProgressCallback::new(&progress_channel, "proxmox_install");
+    let callback = TauriProgressCallback::new(&progress_channel, "proxmox_install")
+        .cancellable(job.cancelled());
     // Fully qualified: `create_vm` is defined on both ProxmoxBackend and UtmBackend.
     callback.operation.finish(
         ProxmoxBackend::create_vm(&Backend, &session, &config, &callback)
@@ -703,10 +712,21 @@ pub async fn proxmox_create_vm(
                 let mut error = CommandError::from(error);
                 // A lost response may leave a VM behind. This command cannot yet
                 // resume it safely, even when the underlying network error is transient.
-                error.retryable = false;
+                // A stop never gets that far, so trying again is fine.
+                if error.code != "cancelled" {
+                    error.retryable = false;
+                }
                 error
             }),
     )
+}
+
+/// Stop the Proxmox install or UTM download that `attempt` names. It ends
+/// with a `cancelled` error. Once the virtual machine is being created, it
+/// runs to the end instead.
+#[tauri::command]
+pub fn cancel_vm_install(attempt: String, jobs: tauri::State<'_, InstallJobs>) {
+    jobs.cancel(&attempt);
 }
 
 /// Get the run status and IP address of a Proxmox VM
@@ -804,6 +824,7 @@ mod tests {
         crate::diagnostics::clear_test_log_tail();
         let app = tauri::test::mock_app();
         app.manage(PendingUtmImages::default());
+        app.manage(crate::install_jobs::InstallJobs::default());
         let channel = Channel::new(|_| {
             let tail = crate::diagnostics::test_log_tail();
             assert!(!tail
@@ -811,7 +832,9 @@ mod tests {
                 .any(|line| line.contains("rust utm_download") && line.contains(" success ")));
             Ok(())
         });
-        let path = download_utm_image(channel, app.state()).await.unwrap();
+        let path = download_utm_image("attempt".into(), channel, app.state(), app.state())
+            .await
+            .unwrap();
         let tail = crate::diagnostics::test_log_tail();
         assert_eq!(
             tail.iter()
@@ -832,8 +855,11 @@ mod tests {
 
         let app = tauri::test::mock_app();
         app.manage(PendingUtmImages::default());
+        app.manage(InstallJobs::default());
         let channel = Channel::new(|_| panic!("An unsupported UTM download must not start"));
-        let error = download_utm_image(channel, app.state()).await.unwrap_err();
+        let error = download_utm_image("attempt".into(), channel, app.state(), app.state())
+            .await
+            .unwrap_err();
         assert_eq!(error.code, "unsupported_platform");
         // The log category is the same fixed code the view receives
         let tail = crate::diagnostics::test_log_tail();
@@ -1983,9 +2009,15 @@ mod mock_tests {
         // detection; run_utm_download_returns_extracted_image covers that board.
         let app = tauri::test::mock_app();
         app.manage(PendingUtmImages::default());
-        let path = download_utm_image(Channel::new(|_| Ok(())), app.state())
-            .await
-            .unwrap();
+        app.manage(InstallJobs::default());
+        let path = download_utm_image(
+            "attempt".into(),
+            Channel::new(|_| Ok(())),
+            app.state(),
+            app.state(),
+        )
+        .await
+        .unwrap();
         assert!(std::path::Path::new(&path).exists());
         assert!(path.ends_with(".qcow2"));
         assert!(app
