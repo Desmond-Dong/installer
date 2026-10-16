@@ -38,8 +38,9 @@ import {
   type WizardFlow,
   type WizardState,
 } from "../state/wizard-state.js";
-import { listBlockDevices } from "../api/index.js";
+import { listBlockDevices, onCloseBlocked, quitAnyway } from "../api/index.js";
 import { findDrive, readDriveSelection } from "../utils/drive-selection.js";
+import { logFrontendError } from "../utils/diagnostics.js";
 import { openExternalUrl } from "../utils/external-url.js";
 
 export type ViewName =
@@ -114,7 +115,11 @@ export class AppShell extends LitElement {
   @state()
   private _vmStoppable = false;
 
+  @state()
+  private _showQuitDialog = false;
+
   private _unsubscribe?: () => void;
+  private _stopCloseListener?: Promise<() => void>;
   private _pendingFlow?: WizardFlow;
 
   connectedCallback() {
@@ -122,11 +127,21 @@ export class AppShell extends LitElement {
     this._unsubscribe = wizardState.subscribe((state) => {
       this._wizardState = state;
     });
+    // The backend holds back closing the app while an installation runs
+    this._stopCloseListener = onCloseBlocked(() => {
+      // One question at a time: quitting is the bigger one
+      this._showStopDialog = false;
+      this._showQuitDialog = true;
+    }).catch((error: unknown) => {
+      logFrontendError(error);
+      return () => {};
+    });
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     this._unsubscribe?.();
+    void this._stopCloseListener?.then((stop) => stop());
   }
 
   render() {
@@ -150,6 +165,7 @@ export class AppShell extends LitElement {
         @dialog-confirm=${this._onDialogConfirm}
       ></confirm-dialog>
       <info-dialog
+        class="stop-dialog"
         ?open=${this._showStopDialog}
         .title=${localize("components.app_shell.stop_installation_title")}
         .message=${wizardState.currentStep?.id === "flash"
@@ -157,8 +173,22 @@ export class AppShell extends LitElement {
           : localize("components.app_shell.stop_vm_installation_message")}
         .primaryLabel=${localize("components.app_shell.stop_installation")}
         .secondaryLabel=${localize("components.app_shell.keep_installing")}
+        primaryVariant="danger"
         @dialog-primary=${this._onStopInstallation}
         @dialog-secondary=${this._onKeepInstalling}
+      ></info-dialog>
+      <info-dialog
+        class="quit-dialog"
+        ?open=${this._showQuitDialog}
+        .title=${localize("components.app_shell.quit_while_installing_title")}
+        .message=${localize(
+          "components.app_shell.quit_while_installing_message"
+        )}
+        .primaryLabel=${localize("components.app_shell.quit_anyway")}
+        .secondaryLabel=${localize("components.app_shell.keep_installing")}
+        primaryVariant="danger"
+        @dialog-primary=${this._onQuitAnyway}
+        @dialog-secondary=${this._onKeepInstallingOnQuit}
       ></info-dialog>
     `;
   }
@@ -651,6 +681,15 @@ export class AppShell extends LitElement {
     if (index >= 0) {
       wizardState.goToStep(index);
     }
+  }
+
+  private _onKeepInstallingOnQuit() {
+    this._showQuitDialog = false;
+  }
+
+  private _onQuitAnyway() {
+    this._showQuitDialog = false;
+    void quitAnyway();
   }
 
   private _onDialogCancel() {
