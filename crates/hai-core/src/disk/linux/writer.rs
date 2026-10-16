@@ -44,6 +44,13 @@ pub async fn write_image<P: ProgressCallback>(
         return Err(Error::DriveDisconnected);
     }
 
+    // The device name can belong to another drive by the time the write is
+    // done, so remember which drive this is while that is certain
+    let flashed = match managed_objects(&connection).await {
+        Ok(objects) => flashed_drive(&objects, &block_path),
+        Err(_) => None,
+    };
+
     // A stop during the polkit prompt must leave the drive untouched
     if progress_callback.is_cancelled() {
         return Err(Error::Cancelled);
@@ -75,6 +82,13 @@ pub async fn write_image<P: ProgressCallback>(
     ));
 
     let _ = Command::new("sync").output();
+
+    // Best effort, like "Safely remove" in the file manager: the write and the
+    // verify passed, so the drive is done. If this fails or is skipped, the
+    // success screen tells the user to eject the drive themselves.
+    if let Some(flashed) = flashed {
+        let _ = eject_drive(&connection, &flashed).await;
+    }
 
     progress_callback.on_progress(FlashProgress::new(
         FlashStage::Complete,
@@ -224,20 +238,166 @@ fn verify_write(
     Ok(())
 }
 
-/// Unmount everything on the disk before writing.
-async fn unmount_disk(conn: &Connection, block_path: &OwnedObjectPath) -> Result<()> {
-    let manager = ObjectManagerProxy::builder(conn)
-        .destination("org.freedesktop.UDisks2")
-        .and_then(|builder| builder.path("/org/freedesktop/UDisks2"))
-        .map_err(|e| map_udisks_error(e, "addressing udisks2"))?
+/// The drive a flash went to, as udisks knows it. Unlike the device name,
+/// its `Id` is not handed to the next drive that gets plugged in.
+#[derive(Debug, Clone, PartialEq)]
+struct FlashedDrive {
+    path: OwnedObjectPath,
+    id: String,
+    /// When the card went in, for a card reader. Its `Id` is the reader's,
+    /// and stays the same when the card is swapped. `None` for a drive that
+    /// is its own media, like a USB stick.
+    media_detected: Option<u64>,
+}
+
+/// What to clean up after a flash, bound to the flashed drive.
+#[derive(Debug, PartialEq)]
+struct Cleanup {
+    filesystems: Vec<OwnedObjectPath>,
+    power_off: bool,
+    eject: bool,
+}
+
+const BLOCK: &str = "org.freedesktop.UDisks2.Block";
+const DRIVE: &str = "org.freedesktop.UDisks2.Drive";
+const FILESYSTEM: &str = "org.freedesktop.UDisks2.Filesystem";
+
+fn property<T: TryFrom<zbus::zvariant::OwnedValue>>(
+    objects: &ManagedObjects,
+    path: &OwnedObjectPath,
+    interface: &str,
+    name: &str,
+) -> Option<T> {
+    objects
+        .get(path)?
+        .iter()
+        .find(|(candidate, _)| candidate.as_str() == interface)?
+        .1
+        .get(name)?
+        .try_clone()
+        .ok()?
+        .try_into()
+        .ok()
+}
+
+/// The drive behind `block_path`, or `None` when udisks can't name it for
+/// sure (no drive, or no persistent `Id`). Then nothing gets cleaned up.
+fn flashed_drive(objects: &ManagedObjects, block_path: &OwnedObjectPath) -> Option<FlashedDrive> {
+    let path: OwnedObjectPath = property(objects, block_path, BLOCK, "Drive")?;
+    let id: String = property(objects, &path, DRIVE, "Id")?;
+    if path.as_str() == "/" || id.is_empty() {
+        return None;
+    }
+
+    let media_detected = media_detected(objects, &path)?;
+    Some(FlashedDrive {
+        path,
+        id,
+        media_detected,
+    })
+}
+
+/// When the current media went in, for a drive with removable media. The
+/// outer `None` means udisks can't say, so the drive can't be told apart.
+fn media_detected(objects: &ManagedObjects, drive: &OwnedObjectPath) -> Option<Option<u64>> {
+    if !property::<bool>(objects, drive, DRIVE, "MediaRemovable")? {
+        return Some(None);
+    }
+
+    // udisks only sets this when media arrives, so a write doesn't move it
+    let detected: u64 = property(objects, drive, DRIVE, "TimeMediaDetected")?;
+    (detected != 0).then_some(Some(detected))
+}
+
+/// The cleanup for `flashed`, if it is still plugged in as itself. Only its
+/// own filesystems qualify, whatever device names they have by now.
+fn cleanup_for(objects: &ManagedObjects, flashed: &FlashedDrive) -> Option<Cleanup> {
+    let id: String = property(objects, &flashed.path, DRIVE, "Id")?;
+    if id != flashed.id || media_detected(objects, &flashed.path)? != flashed.media_detected {
+        return None;
+    }
+
+    let mut filesystems: Vec<OwnedObjectPath> = objects
+        .iter()
+        .filter(|(path, interfaces)| {
+            interfaces.keys().any(|name| name.as_str() == FILESYSTEM)
+                && property::<OwnedObjectPath>(objects, path, BLOCK, "Drive").as_ref()
+                    == Some(&flashed.path)
+        })
+        .map(|(path, _)| path.clone())
+        .collect();
+    filesystems.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+
+    Some(Cleanup {
+        filesystems,
+        power_off: property(objects, &flashed.path, DRIVE, "CanPowerOff").unwrap_or(false)
+            && !has_siblings(objects, &flashed.path),
+        eject: property(objects, &flashed.path, DRIVE, "Ejectable").unwrap_or(false),
+    })
+}
+
+/// Whether other drives share this one's hardware, like the other slots of a
+/// multi-card reader. Powering it off would disconnect those too.
+fn has_siblings(objects: &ManagedObjects, drive: &OwnedObjectPath) -> bool {
+    let Some(sibling_id) = property::<String>(objects, drive, DRIVE, "SiblingId") else {
+        return false;
+    };
+    if sibling_id.is_empty() {
+        return false;
+    }
+
+    objects.keys().any(|path| {
+        path != drive
+            && property::<String>(objects, path, DRIVE, "SiblingId").as_ref() == Some(&sibling_id)
+    })
+}
+
+/// Unmount what the desktop mounted from the fresh image, then power the
+/// drive off, or eject its media when it can't be powered off. Skipped when
+/// the flashed drive is gone, or another drive took its place.
+async fn eject_drive(conn: &Connection, flashed: &FlashedDrive) -> Result<()> {
+    let Some(cleanup) = cleanup_for(&managed_objects(conn).await?, flashed) else {
+        return Ok(());
+    };
+
+    // Never raise a second password prompt for cleanup the user didn't ask for
+    let options = || HashMap::from([("auth.no_user_interaction", Value::from(true))]);
+    let context = "cleaning up after the flash";
+
+    // Desktops automount the new boot partition as soon as it appears. One
+    // that stays mounted, refused or busy, ends the cleanup: powering off
+    // under it would fail or lose data.
+    for path in cleanup.filesystems {
+        let filesystem = UDisks2FilesystemProxy::builder(conn)
+            .path(path)
+            .map_err(|e| map_udisks_error(e, context))?
+            .cache_properties(CacheProperties::No)
+            .build()
+            .await
+            .map_err(|e| map_udisks_error(e, context))?;
+        check_unmount_result(filesystem.unmount(options()).await, context)?;
+    }
+
+    let drive = UDisks2DriveProxy::builder(conn)
+        .path(flashed.path.clone())
+        .map_err(|e| map_udisks_error(e, context))?
         .cache_properties(CacheProperties::No)
         .build()
         .await
-        .map_err(|e| map_udisks_error(e, "reading the disk inventory"))?;
-    let objects = manager
-        .get_managed_objects()
-        .await
-        .map_err(|e| map_udisks_error(e.into(), "reading the disk inventory"))?;
+        .map_err(|e| map_udisks_error(e, context))?;
+    let result = if cleanup.power_off {
+        drive.power_off(options()).await
+    } else if cleanup.eject {
+        drive.eject(options()).await
+    } else {
+        Ok(())
+    };
+    result.map_err(|e| map_udisks_error(e, context))
+}
+
+/// Unmount everything on the disk before writing.
+async fn unmount_disk(conn: &Connection, block_path: &OwnedObjectPath) -> Result<()> {
+    let objects = managed_objects(conn).await?;
 
     for path in unmount_targets(&objects, block_path)? {
         let context =
@@ -253,6 +413,22 @@ async fn unmount_disk(conn: &Connection, block_path: &OwnedObjectPath) -> Result
     }
 
     Ok(())
+}
+
+/// Every udisks object with its interfaces and properties.
+async fn managed_objects(conn: &Connection) -> Result<ManagedObjects> {
+    let manager = ObjectManagerProxy::builder(conn)
+        .destination("org.freedesktop.UDisks2")
+        .and_then(|builder| builder.path("/org/freedesktop/UDisks2"))
+        .map_err(|e| map_udisks_error(e, "addressing udisks2"))?
+        .cache_properties(CacheProperties::No)
+        .build()
+        .await
+        .map_err(|e| map_udisks_error(e, "reading the disk inventory"))?;
+    manager
+        .get_managed_objects()
+        .await
+        .map_err(|e| map_udisks_error(e.into(), "reading the disk inventory"))
 }
 
 fn unmount_targets(
@@ -426,6 +602,16 @@ trait UDisks2Block {
 }
 
 #[zbus::proxy(
+    interface = "org.freedesktop.UDisks2.Drive",
+    default_service = "org.freedesktop.UDisks2",
+    gen_blocking = false
+)]
+trait UDisks2Drive {
+    fn eject(&self, options: HashMap<&str, Value<'_>>) -> zbus::Result<()>;
+    fn power_off(&self, options: HashMap<&str, Value<'_>>) -> zbus::Result<()>;
+}
+
+#[zbus::proxy(
     interface = "org.freedesktop.UDisks2.Filesystem",
     default_service = "org.freedesktop.UDisks2",
     gen_blocking = false
@@ -504,6 +690,248 @@ mod tests {
             .unwrap()
             .clear();
         assert!(unmount_targets(&objects, &disk).is_err());
+    }
+
+    type Properties<'a> = Vec<(&'a str, Value<'a>)>;
+    type Interfaces<'a> = Vec<(&'a str, Properties<'a>)>;
+
+    /// A udisks inventory: object path, then interfaces with their properties.
+    fn inventory(objects: Vec<(&str, Interfaces<'_>)>) -> ManagedObjects {
+        objects
+            .into_iter()
+            .map(|(path, interfaces)| {
+                let interfaces = interfaces
+                    .into_iter()
+                    .map(|(interface, properties)| {
+                        let properties = properties
+                            .into_iter()
+                            .map(|(name, value)| {
+                                (
+                                    name.to_string(),
+                                    zbus::zvariant::OwnedValue::try_from(value).unwrap(),
+                                )
+                            })
+                            .collect();
+                        (
+                            zbus::names::OwnedInterfaceName::try_from(interface).unwrap(),
+                            properties,
+                        )
+                    })
+                    .collect();
+                (OwnedObjectPath::try_from(path).unwrap(), interfaces)
+            })
+            .collect()
+    }
+
+    fn object(path: &str) -> zbus::zvariant::ObjectPath<'_> {
+        zbus::zvariant::ObjectPath::try_from(path).unwrap()
+    }
+
+    fn path(path: &str) -> OwnedObjectPath {
+        OwnedObjectPath::try_from(path).unwrap()
+    }
+
+    const SANDISK: &str = "/org/freedesktop/UDisks2/drives/SanDisk_1";
+    const OTHER: &str = "/org/freedesktop/UDisks2/drives/Kingston_2";
+    const SDB: &str = "/org/freedesktop/UDisks2/block_devices/sdb";
+    const SDB1: &str = "/org/freedesktop/UDisks2/block_devices/sdb1";
+    const SDC1: &str = "/org/freedesktop/UDisks2/block_devices/sdc1";
+
+    fn flashed_sandisk() -> FlashedDrive {
+        FlashedDrive {
+            path: path(SANDISK),
+            id: "SanDisk-Ultra-1".into(),
+            media_detected: None,
+        }
+    }
+
+    #[test]
+    fn flashed_drive_needs_a_persistent_id() {
+        let drive = |id: &'static str| {
+            inventory(vec![
+                (SDB, vec![(BLOCK, vec![("Drive", object(SANDISK).into())])]),
+                (
+                    SANDISK,
+                    vec![(
+                        DRIVE,
+                        vec![("Id", id.into()), ("MediaRemovable", false.into())],
+                    )],
+                ),
+            ])
+        };
+        assert_eq!(
+            flashed_drive(&drive("SanDisk-Ultra-1"), &path(SDB)),
+            Some(flashed_sandisk())
+        );
+        // udisks leaves Id blank when the drive has nothing persistent
+        assert_eq!(flashed_drive(&drive(""), &path(SDB)), None);
+
+        // A block without a drive, or with a drive udisks doesn't list
+        let loose = inventory(vec![(
+            SDB,
+            vec![(BLOCK, vec![("Drive", object("/").into())])],
+        )]);
+        assert_eq!(flashed_drive(&loose, &path(SDB)), None);
+        let missing = inventory(vec![(
+            SDB,
+            vec![(BLOCK, vec![("Drive", object(SANDISK).into())])],
+        )]);
+        assert_eq!(flashed_drive(&missing, &path(SDB)), None);
+    }
+
+    #[test]
+    fn cleanup_touches_only_the_flashed_drive() {
+        let objects = inventory(vec![
+            (
+                SANDISK,
+                vec![(
+                    DRIVE,
+                    vec![
+                        ("Id", "SanDisk-Ultra-1".into()),
+                        ("MediaRemovable", false.into()),
+                        ("CanPowerOff", true.into()),
+                        ("Ejectable", true.into()),
+                    ],
+                )],
+            ),
+            (OTHER, vec![(DRIVE, vec![("Id", "Kingston-2".into())])]),
+            // The whole disk has no filesystem, its partition does
+            (SDB, vec![(BLOCK, vec![("Drive", object(SANDISK).into())])]),
+            (
+                SDB1,
+                vec![
+                    (BLOCK, vec![("Drive", object(SANDISK).into())]),
+                    (FILESYSTEM, vec![]),
+                ],
+            ),
+            // Mounted, but on another drive
+            (
+                SDC1,
+                vec![
+                    (BLOCK, vec![("Drive", object(OTHER).into())]),
+                    (FILESYSTEM, vec![]),
+                ],
+            ),
+        ]);
+
+        assert_eq!(
+            cleanup_for(&objects, &flashed_sandisk()),
+            Some(Cleanup {
+                filesystems: vec![path(SDB1)],
+                power_off: true,
+                eject: true,
+            })
+        );
+    }
+
+    #[test]
+    fn multi_slot_reader_is_ejected_not_powered_off() {
+        let slot = |id: &'static str, sibling: &'static str| {
+            vec![(
+                DRIVE,
+                vec![
+                    ("Id", id.into()),
+                    ("MediaRemovable", false.into()),
+                    ("SiblingId", sibling.into()),
+                    ("CanPowerOff", true.into()),
+                    ("Ejectable", true.into()),
+                ],
+            )]
+        };
+        let reader = "/sys/devices/pci0000:00/usb1/1-2";
+
+        // Powering off would take the card in the other slot with it
+        let shared = inventory(vec![
+            (SANDISK, slot("SanDisk-Ultra-1", reader)),
+            (OTHER, slot("Kingston-2", reader)),
+        ]);
+        let cleanup = cleanup_for(&shared, &flashed_sandisk()).unwrap();
+        assert!(!cleanup.power_off);
+        assert!(cleanup.eject);
+
+        // Alone on its hardware, or without a SiblingId: power off as before
+        for other_reader in ["/sys/devices/pci0000:00/usb1/1-3", ""] {
+            let alone = inventory(vec![
+                (SANDISK, slot("SanDisk-Ultra-1", "")),
+                (OTHER, slot("Kingston-2", other_reader)),
+            ]);
+            assert!(cleanup_for(&alone, &flashed_sandisk()).unwrap().power_off);
+        }
+        let separate = inventory(vec![
+            (SANDISK, slot("SanDisk-Ultra-1", reader)),
+            (
+                OTHER,
+                slot("Kingston-2", "/sys/devices/pci0000:00/usb1/1-3"),
+            ),
+        ]);
+        assert!(
+            cleanup_for(&separate, &flashed_sandisk())
+                .unwrap()
+                .power_off
+        );
+    }
+
+    #[test]
+    fn card_reader_cleanup_needs_the_same_card() {
+        // The reader keeps its Id when the card in it is swapped
+        let reader = |detected: u64| {
+            inventory(vec![
+                (SDB, vec![(BLOCK, vec![("Drive", object(SANDISK).into())])]),
+                (
+                    SANDISK,
+                    vec![(
+                        DRIVE,
+                        vec![
+                            ("Id", "SanDisk-Ultra-1".into()),
+                            ("MediaRemovable", true.into()),
+                            ("TimeMediaDetected", detected.into()),
+                            ("Ejectable", true.into()),
+                        ],
+                    )],
+                ),
+            ])
+        };
+        let flashed = flashed_drive(&reader(1_000), &path(SDB)).unwrap();
+        assert_eq!(flashed.media_detected, Some(1_000));
+        assert!(cleanup_for(&reader(1_000), &flashed).is_some());
+
+        // Another card went in after the write
+        assert_eq!(cleanup_for(&reader(2_000), &flashed), None);
+        // No card now, or udisks can't say when it came
+        assert_eq!(cleanup_for(&reader(0), &flashed), None);
+        // Nothing to tell cards apart with to begin with
+        assert_eq!(flashed_drive(&reader(0), &path(SDB)), None);
+    }
+
+    #[test]
+    fn cleanup_is_skipped_once_the_drive_is_gone_or_replaced() {
+        // Unplugged: udisks no longer lists the drive
+        let removed = inventory(vec![(
+            OTHER,
+            vec![(DRIVE, vec![("Id", "Kingston-2".into())])],
+        )]);
+        assert_eq!(cleanup_for(&removed, &flashed_sandisk()), None);
+
+        // Another drive took over sdb, and its partitions are mounted
+        let replaced = inventory(vec![
+            (OTHER, vec![(DRIVE, vec![("Id", "Kingston-2".into())])]),
+            (SDB, vec![(BLOCK, vec![("Drive", object(OTHER).into())])]),
+            (
+                SDB1,
+                vec![
+                    (BLOCK, vec![("Drive", object(OTHER).into())]),
+                    (FILESYSTEM, vec![]),
+                ],
+            ),
+        ]);
+        assert_eq!(cleanup_for(&replaced, &flashed_sandisk()), None);
+
+        // Same object path, but a drive udisks identifies differently
+        let lookalike = inventory(vec![(
+            SANDISK,
+            vec![(DRIVE, vec![("Id", "SanDisk-Ultra-9".into())])],
+        )]);
+        assert_eq!(cleanup_for(&lookalike, &flashed_sandisk()), None);
     }
 
     #[test]
