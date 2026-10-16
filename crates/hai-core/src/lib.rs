@@ -16,6 +16,7 @@
 pub mod disk;
 pub mod download;
 pub mod error;
+pub mod hardware_installer;
 pub mod host;
 pub mod keep_awake;
 pub mod manifest;
