@@ -3,7 +3,9 @@
 use super::super::*;
 use crate::error::Error;
 use serde::Deserialize;
+use std::os::windows::process::CommandExt;
 use std::process::Command;
+use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
 #[derive(Debug, Deserialize)]
 struct PowerShellDisk {
@@ -35,6 +37,7 @@ pub(super) fn list_devices_sync() -> Result<Vec<BlockDevice>> {
 
     let output = Command::new("powershell")
         .args(["-NoProfile", "-Command", script])
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(Error::Io)?;
 
