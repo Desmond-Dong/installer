@@ -561,7 +561,7 @@ fn map_udisks_error(err: zbus::Error, context: &str) -> Error {
                 .as_deref()
                 .is_some_and(|m| m.contains("Device or resource busy"))
         {
-            return Error::DeviceBusy(context.to_string());
+            return Error::DeviceBusy(BusyReason::InUse, context.to_string());
         }
         // A locked card fails right at the open, as EROFS in the message.
         if message
@@ -979,7 +979,7 @@ mod tests {
             let result =
                 check_unmount_result(Err(method_error(name, message)), "unmounting /dev/sdb1");
             assert!(
-                matches!(result, Err(Error::DeviceBusy(context)) if context.contains("/dev/sdb1"))
+                matches!(result, Err(Error::DeviceBusy(_, context)) if context.contains("/dev/sdb1"))
             );
         }
     }
@@ -1039,7 +1039,7 @@ mod tests {
             Some("Error opening device /dev/sdb: Device or resource busy"),
         );
         let mapped = map_udisks_error(err, "opening the device");
-        assert!(matches!(mapped, Error::DeviceBusy(_)));
+        assert!(matches!(mapped, Error::DeviceBusy(..)));
     }
 
     #[test]
