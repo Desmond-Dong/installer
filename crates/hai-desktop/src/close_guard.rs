@@ -5,13 +5,16 @@
 //! close request is held back and the frontend asks the user first. If they
 //! still want out, the frontend calls [`quit_anyway`].
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tauri::{Emitter, Window, WindowEvent};
 
 /// Sent to the frontend when a close request was held back.
 const CLOSE_BLOCKED_EVENT: &str = "close-blocked";
 
 static RUNNING_JOBS: JobCounter = JobCounter::new();
+
+#[cfg(target_os = "macos")]
+static EXIT_ANYWAY: AtomicBool = AtomicBool::new(false);
 
 struct JobCounter(AtomicUsize);
 
@@ -70,7 +73,41 @@ pub(crate) fn on_window_event(window: &Window, event: &WindowEvent) {
 #[tauri::command]
 pub fn quit_anyway(app: tauri::AppHandle) {
     crate::diagnostics::warning("quit_during_job");
+    #[cfg(target_os = "macos")]
+    EXIT_ANYWAY.store(true, Ordering::Release);
     app.exit(0);
+}
+
+/// Handle application-level quits, which do not close a window first.
+pub(crate) fn on_run_event<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: tauri::RunEvent) {
+    #[cfg(target_os = "macos")]
+    if let tauri::RunEvent::ExitRequested { api, .. } = event {
+        use tauri::Manager;
+
+        if !should_prevent_exit(RUNNING_JOBS.any(), &EXIT_ANYWAY) {
+            return;
+        }
+        let Some(window) = app.get_webview_window("main") else {
+            return;
+        };
+
+        api.prevent_exit();
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+
+        if window.emit(CLOSE_BLOCKED_EVENT, ()).is_err() {
+            crate::diagnostics::warning("close_blocked_event_failed");
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, event);
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn should_prevent_exit(any_running_job: bool, exit_anyway: &AtomicBool) -> bool {
+    !exit_anyway.swap(false, Ordering::AcqRel) && any_running_job
 }
 
 /// The default macOS menu, with a Quit item that goes through the close
@@ -149,5 +186,16 @@ mod tests {
 
         drop(second);
         assert!(!COUNTER.any());
+    }
+
+    #[test]
+    fn exit_is_prevented_only_for_running_jobs_unless_quit_was_confirmed() {
+        let exit_anyway = AtomicBool::new(false);
+        assert!(!should_prevent_exit(false, &exit_anyway));
+        assert!(should_prevent_exit(true, &exit_anyway));
+
+        exit_anyway.store(true, Ordering::Release);
+        assert!(!should_prevent_exit(true, &exit_anyway));
+        assert!(!should_prevent_exit(true, &exit_anyway));
     }
 }
