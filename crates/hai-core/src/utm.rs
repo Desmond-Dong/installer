@@ -27,7 +27,10 @@ fn applescript_output(output: std::process::Output) -> Result<String> {
     if output.status.code().is_none()
         || matches!(code, None | Some(-1711 | -1712 | -1718 | -609 | -600))
     {
-        Err(Error::UtmOperationUncertain(message))
+        Err(Error::UtmOperationUncertain(crate::message!(
+            "backend.utm.no_answer",
+            detail = message,
+        )))
     } else {
         Err(applescript_error(&message))
     }
@@ -64,13 +67,13 @@ fn check_architecture(
             // Intel macOS versions without Rosetta do not expose this sysctl.
             Ok(0) => Err(intel_mac()),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Err(intel_mac()),
-            Ok(value) => Err(Error::Utm(format!(
-                "Unexpected Rosetta translation status: {}",
-                value
+            Ok(value) => Err(Error::Utm(crate::message!(
+                "backend.utm.rosetta_status_unknown",
+                detail = value,
             ))),
-            Err(err) => Err(Error::Utm(format!(
-                "Failed to detect the Mac's native architecture: {}",
-                err
+            Err(err) => Err(Error::Utm(crate::message!(
+                "backend.utm.architecture_unknown",
+                detail = err.to_string(),
             ))),
         },
         arch => Err(Error::UnsupportedPlatform(format!(
@@ -155,9 +158,10 @@ fn vm_status(vm_id: &str) -> Result<VmStatusInfo> {
 
 #[cfg(any(target_os = "macos", test))]
 fn created_vm_start_error(name: &str, error: Error) -> Error {
-    Error::UtmVmCreated(format!(
-        "The virtual machine '{name}' was created, but the installer could not confirm it started. \
-         Open UTM to start it or remove it before installing again. {error}"
+    Error::UtmVmCreated(crate::message!(
+        "backend.utm.vm_created_not_started",
+        name = name,
+        detail = error.detail(),
     ))
 }
 
@@ -165,12 +169,12 @@ fn created_vm_start_error(name: &str, error: Error) -> Error {
 fn applescript_error(stderr: &str) -> Error {
     // osascript reports the numeric Apple Event error after the localized message.
     if stderr.trim().ends_with("(-1743)") {
-        Error::Utm(
-            "Home Assistant Installer is not allowed to control UTM. Open System Settings > Privacy & Security > Automation, enable UTM under Home Assistant Installer, then try again."
-                .to_string(),
-        )
+        Error::Utm(crate::message!("backend.utm.automation_denied"))
     } else {
-        Error::Utm(stderr.trim().to_string())
+        Error::Utm(crate::message!(
+            "backend.utm.applescript_error",
+            detail = stderr.trim(),
+        ))
     }
 }
 
@@ -367,9 +371,17 @@ mod macos {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
-            .map_err(|e| Error::Utm(format!("Failed to execute AppleScript: {}", e)))?;
+            .map_err(|e| {
+                Error::Utm(crate::message!(
+                    "backend.utm.applescript_not_started",
+                    detail = e.to_string(),
+                ))
+            })?;
         let output = child.wait_with_output().map_err(|error| {
-            Error::UtmOperationUncertain(format!("Failed to wait for AppleScript: {error}"))
+            Error::UtmOperationUncertain(crate::message!(
+                "backend.utm.applescript_lost",
+                detail = error.to_string(),
+            ))
         })?;
         applescript_output(output)
     }
@@ -400,15 +412,15 @@ end tell"#,
         // Verify UTM is installed
         let status = check_utm_status().await?;
         if !status.installed {
-            return Err(Error::Utm("UTM is not installed".to_string()));
+            return Err(Error::Utm(crate::message!("backend.utm.not_installed")));
         }
 
         // Verify the image file exists
         let image_path = std::path::Path::new(&config.image_path);
         if !image_path.exists() {
-            return Err(Error::Utm(format!(
-                "Image file not found: {}",
-                config.image_path
+            return Err(Error::Utm(crate::message!(
+                "backend.utm.image_not_found",
+                path = config.image_path,
             )));
         }
 
@@ -493,14 +505,21 @@ mod tests {
     #[test]
     fn failure_starting_a_created_vm_cannot_be_retried_as_creation() {
         let error =
-            created_vm_start_error("My home", Error::Utm("Enable Automation access".into()));
+            created_vm_start_error("My home", applescript_error("Enable Automation access"));
         let Error::UtmVmCreated(message) = error else {
             panic!("expected created-VM error")
         };
-        assert!(message.contains("My home"));
-        assert!(message.contains("Open UTM"));
-        assert!(message.contains("Enable Automation access"));
-        assert!(!message.contains("importing"));
+        let english = message.to_string();
+        assert!(english.contains("My home"));
+        assert!(english.contains("Open UTM"));
+        assert!(english.contains("Enable Automation access"));
+        assert!(!english.contains("importing"));
+        // The reason stays a catalog message, without the error's prefix
+        assert!(!english.contains("UTM error"));
+        assert_eq!(
+            message.params_json()["detail"]["key"],
+            "backend.utm.applescript_error"
+        );
     }
 
     #[test]
@@ -512,10 +531,11 @@ mod tests {
             let Error::Utm(message) = applescript_error(stderr) else {
                 panic!("Expected UTM error");
             };
-            assert!(message.contains("System Settings > Privacy & Security > Automation"));
-            assert!(message.contains("enable UTM under Home Assistant Installer"));
-            assert!(message.contains("try again"));
-            assert!(!message.contains("execution error"));
+            let english = message.to_string();
+            assert!(english.contains("System Settings > Privacy & Security > Automation"));
+            assert!(english.contains("enable UTM under Home Assistant Installer"));
+            assert!(english.contains("try again"));
+            assert!(!english.contains("execution error"));
         }
     }
 
@@ -551,7 +571,7 @@ mod tests {
             let Error::Utm(message) = applescript_error(stderr) else {
                 panic!("Expected UTM error");
             };
-            assert_eq!(message, stderr.trim());
+            assert_eq!(message.to_string(), stderr.trim());
         }
     }
 
@@ -637,7 +657,7 @@ mod tests {
             if calls == 1 {
                 Ok("started".into())
             } else {
-                Err(Error::Utm("Guest agent is not running".into()))
+                Err(applescript_error("Guest agent is not running"))
             }
         })
         .unwrap();
@@ -661,7 +681,7 @@ mod tests {
             assert!(result.ip_address.is_none());
             assert_eq!(calls, 1);
         }
-        assert!(query_vm_status("missing-id", |_| Err(Error::Utm("VM not found".into()))).is_err());
+        assert!(query_vm_status("missing-id", |_| Err(applescript_error("VM not found"))).is_err());
     }
 
     #[test]
@@ -881,7 +901,10 @@ mod tests {
             assert!(result.is_err());
             if let Err(Error::Utm(msg)) = result {
                 // Error message should contain something about syntax error
-                assert!(!msg.is_empty(), "Error message should not be empty");
+                assert!(
+                    !msg.to_string().is_empty(),
+                    "Error message should not be empty"
+                );
             } else {
                 panic!("Expected Utm error");
             }
