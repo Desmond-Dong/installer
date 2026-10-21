@@ -5,7 +5,9 @@
 //! close request is held back and the frontend asks the user first. If they
 //! still want out, the frontend calls [`quit_anyway`].
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+#[cfg(any(target_os = "macos", test))]
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tauri::{Emitter, Window, WindowEvent};
 
 /// Sent to the frontend when a close request was held back.
@@ -196,6 +198,6 @@ mod tests {
 
         exit_anyway.store(true, Ordering::Release);
         assert!(!should_prevent_exit(true, &exit_anyway));
-        assert!(!should_prevent_exit(true, &exit_anyway));
+        assert!(should_prevent_exit(true, &exit_anyway));
     }
 }

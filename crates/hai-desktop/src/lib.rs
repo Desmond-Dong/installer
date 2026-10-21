@@ -95,8 +95,8 @@ pub fn run() {
             proxmox_create_vm
         ])
         .build(tauri::generate_context!())
-        .expect("error while running tauri application");
-    builder.run(close_guard::on_run_event);
+        .expect("error while building tauri application")
+        .run(close_guard::on_run_event);
 }
 
 #[cfg(test)]
