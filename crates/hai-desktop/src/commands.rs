@@ -424,6 +424,19 @@ fn utm_board() -> Result<&'static str, CommandError> {
     Ok(hai_core::utm::HAOS_BOARD)
 }
 
+/// Whether this Mac can run a UTM install, so the path selection can say so
+/// on an Intel Mac before anyone picks it.
+#[tauri::command]
+pub fn utm_supported() -> bool {
+    supports_utm(hai_core::utm::ensure_apple_silicon())
+}
+
+/// Only an unsupported platform marks the option. Any other failure keeps it
+/// open: the next screen reports it with its own message.
+fn supports_utm(apple_silicon: hai_core::Result<()>) -> bool {
+    !matches!(apple_silicon, Err(hai_core::Error::UnsupportedPlatform(_)))
+}
+
 /// Get the release for the same board used by UTM downloads.
 #[tauri::command]
 pub async fn get_utm_haos_release() -> Result<HaosRelease, CommandError> {
@@ -767,6 +780,17 @@ pub async fn proxmox_get_vm_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_an_unsupported_platform_marks_utm_unsupported() {
+        assert!(supports_utm(Ok(())));
+        assert!(!supports_utm(Err(hai_core::Error::UnsupportedPlatform(
+            "UTM installs need a Mac with Apple silicon".into()
+        ))));
+        assert!(supports_utm(Err(hai_core::Error::InvalidConfig(
+            "Rosetta status unknown".into()
+        ))));
+    }
 
     #[tokio::test]
     async fn test_proxmox_certificate_rejects_http() {
