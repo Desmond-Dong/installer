@@ -539,14 +539,6 @@ export class DriveSelectionView extends LitElement {
     this._selectedDriveId = drive.id;
     this._selectionLost = false;
     storeDriveSelection(drive);
-
-    this.dispatchEvent(
-      new CustomEvent("drive-selected", {
-        detail: { drive },
-        bubbles: true,
-        composed: true,
-      })
-    );
   }
 }
 
