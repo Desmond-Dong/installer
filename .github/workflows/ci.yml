@@ -669,6 +669,8 @@ jobs:
       cancel-in-progress: false
     needs:
       - version
+      - audit-frontend
+      - audit-backend
       - zizmor
       - lint-frontend
       - lint-backend
