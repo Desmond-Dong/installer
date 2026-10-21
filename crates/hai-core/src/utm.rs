@@ -12,6 +12,64 @@ use crate::{Backend, ProgressCallback, UtmBackend};
 #[cfg(any(target_os = "macos", test))]
 mod qcow2;
 
+/// Longer than the two minutes macOS gives a single Apple Event, so UTM's own
+/// timeouts still come first. This catches what has no timeout, like a
+/// permission prompt nobody sees or a UTM that stopped responding.
+#[cfg(target_os = "macos")]
+const APPLESCRIPT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// Wait for `child`, but kill it once `deadline` passes.
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn wait_with_deadline(
+    mut child: std::process::Child,
+    deadline: std::time::Duration,
+) -> Result<std::process::Output> {
+    use std::io::Read;
+
+    // Drain the pipes while waiting, so a full pipe can't stall the script
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut buffer = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut buffer);
+            }
+            buffer
+        })
+    };
+    let stdout = drain(child.stdout.take().map(|pipe| Box::new(pipe) as _));
+    let stderr = drain(child.stderr.take().map(|pipe| Box::new(pipe) as _));
+
+    let started = std::time::Instant::now();
+    let status = loop {
+        let waited = child.try_wait().map_err(|error| {
+            Error::UtmOperationUncertain(crate::message!(
+                "backend.utm.applescript_lost",
+                detail = error.to_string(),
+            ))
+        })?;
+        if let Some(status) = waited {
+            break status;
+        }
+
+        if started.elapsed() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            // Killing the script doesn't undo what UTM may already be doing
+            return Err(Error::UtmOperationUncertain(crate::message!(
+                "backend.utm.no_response",
+                minutes = deadline.as_secs() / 60,
+            )));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+
+    Ok(std::process::Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    })
+}
+
 #[cfg(any(target_os = "macos", all(test, unix)))]
 fn applescript_output(output: std::process::Output) -> Result<String> {
     if output.status.success() {
@@ -27,7 +85,10 @@ fn applescript_output(output: std::process::Output) -> Result<String> {
     if output.status.code().is_none()
         || matches!(code, None | Some(-1711 | -1712 | -1718 | -609 | -600))
     {
-        Err(Error::UtmOperationUncertain(message))
+        Err(Error::UtmOperationUncertain(crate::message!(
+            "backend.utm.no_answer",
+            detail = message,
+        )))
     } else {
         Err(applescript_error(&message))
     }
@@ -64,13 +125,13 @@ fn check_architecture(
             // Intel macOS versions without Rosetta do not expose this sysctl.
             Ok(0) => Err(intel_mac()),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Err(intel_mac()),
-            Ok(value) => Err(Error::Utm(format!(
-                "Unexpected Rosetta translation status: {}",
-                value
+            Ok(value) => Err(Error::Utm(crate::message!(
+                "backend.utm.rosetta_status_unknown",
+                detail = value,
             ))),
-            Err(err) => Err(Error::Utm(format!(
-                "Failed to detect the Mac's native architecture: {}",
-                err
+            Err(err) => Err(Error::Utm(crate::message!(
+                "backend.utm.architecture_unknown",
+                detail = err.to_string(),
             ))),
         },
         arch => Err(Error::UnsupportedPlatform(format!(
@@ -155,9 +216,10 @@ fn vm_status(vm_id: &str) -> Result<VmStatusInfo> {
 
 #[cfg(any(target_os = "macos", test))]
 fn created_vm_start_error(name: &str, error: Error) -> Error {
-    Error::UtmVmCreated(format!(
-        "The virtual machine '{name}' was created, but the installer could not confirm it started. \
-         Open UTM to start it or remove it before installing again. {error}"
+    Error::UtmVmCreated(crate::message!(
+        "backend.utm.vm_created_not_started",
+        name = name,
+        detail = error.detail(),
     ))
 }
 
@@ -165,12 +227,12 @@ fn created_vm_start_error(name: &str, error: Error) -> Error {
 fn applescript_error(stderr: &str) -> Error {
     // osascript reports the numeric Apple Event error after the localized message.
     if stderr.trim().ends_with("(-1743)") {
-        Error::Utm(
-            "Home Assistant Installer is not allowed to control UTM. Open System Settings > Privacy & Security > Automation, enable UTM under Home Assistant Installer, then try again."
-                .to_string(),
-        )
+        Error::Utm(crate::message!("backend.utm.automation_denied"))
     } else {
-        Error::Utm(stderr.trim().to_string())
+        Error::Utm(crate::message!(
+            "backend.utm.applescript_error",
+            detail = stderr.trim(),
+        ))
     }
 }
 
@@ -367,11 +429,13 @@ mod macos {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
-            .map_err(|e| Error::Utm(format!("Failed to execute AppleScript: {}", e)))?;
-        let output = child.wait_with_output().map_err(|error| {
-            Error::UtmOperationUncertain(format!("Failed to wait for AppleScript: {error}"))
-        })?;
-        applescript_output(output)
+            .map_err(|e| {
+                Error::Utm(crate::message!(
+                    "backend.utm.applescript_not_started",
+                    detail = e.to_string(),
+                ))
+            })?;
+        applescript_output(wait_with_deadline(child, APPLESCRIPT_DEADLINE)?)
     }
 
     /// Start a VM by its ID
@@ -400,15 +464,15 @@ end tell"#,
         // Verify UTM is installed
         let status = check_utm_status().await?;
         if !status.installed {
-            return Err(Error::Utm("UTM is not installed".to_string()));
+            return Err(Error::Utm(crate::message!("backend.utm.not_installed")));
         }
 
         // Verify the image file exists
         let image_path = std::path::Path::new(&config.image_path);
         if !image_path.exists() {
-            return Err(Error::Utm(format!(
-                "Image file not found: {}",
-                config.image_path
+            return Err(Error::Utm(crate::message!(
+                "backend.utm.image_not_found",
+                path = config.image_path,
             )));
         }
 
@@ -493,14 +557,21 @@ mod tests {
     #[test]
     fn failure_starting_a_created_vm_cannot_be_retried_as_creation() {
         let error =
-            created_vm_start_error("My home", Error::Utm("Enable Automation access".into()));
+            created_vm_start_error("My home", applescript_error("Enable Automation access"));
         let Error::UtmVmCreated(message) = error else {
             panic!("expected created-VM error")
         };
-        assert!(message.contains("My home"));
-        assert!(message.contains("Open UTM"));
-        assert!(message.contains("Enable Automation access"));
-        assert!(!message.contains("importing"));
+        let english = message.to_string();
+        assert!(english.contains("My home"));
+        assert!(english.contains("Open UTM"));
+        assert!(english.contains("Enable Automation access"));
+        assert!(!english.contains("importing"));
+        // The reason stays a catalog message, without the error's prefix
+        assert!(!english.contains("UTM error"));
+        assert_eq!(
+            message.params_json()["detail"]["key"],
+            "backend.utm.applescript_error"
+        );
     }
 
     #[test]
@@ -512,10 +583,11 @@ mod tests {
             let Error::Utm(message) = applescript_error(stderr) else {
                 panic!("Expected UTM error");
             };
-            assert!(message.contains("System Settings > Privacy & Security > Automation"));
-            assert!(message.contains("enable UTM under Home Assistant Installer"));
-            assert!(message.contains("try again"));
-            assert!(!message.contains("execution error"));
+            let english = message.to_string();
+            assert!(english.contains("System Settings > Privacy & Security > Automation"));
+            assert!(english.contains("enable UTM under Home Assistant Installer"));
+            assert!(english.contains("try again"));
+            assert!(!english.contains("execution error"));
         }
     }
 
@@ -551,7 +623,7 @@ mod tests {
             let Error::Utm(message) = applescript_error(stderr) else {
                 panic!("Expected UTM error");
             };
-            assert_eq!(message, stderr.trim());
+            assert_eq!(message.to_string(), stderr.trim());
         }
     }
 
@@ -609,6 +681,41 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn a_script_that_never_answers_is_stopped() {
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let started = std::time::Instant::now();
+        let error = wait_with_deadline(child, std::time::Duration::from_millis(200)).unwrap_err();
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert!(
+            matches!(&error, Error::UtmOperationUncertain(message) if message.to_string().contains("didn't respond")),
+            "{error}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_script_that_answers_in_time_keeps_its_output() {
+        let child = std::process::Command::new("sh")
+            .args(["-c", "echo vm-id; echo warning >&2; exit 3"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let output = wait_with_deadline(child, std::time::Duration::from_secs(30)).unwrap();
+        assert_eq!(output.status.code(), Some(3));
+        assert_eq!(output.stdout, b"vm-id\n");
+        assert_eq!(output.stderr, b"warning\n");
+    }
+
+    #[test]
     fn status_and_address_queries_use_the_same_escaped_id() {
         let mut calls = Vec::new();
         let result = query_vm_status("unique\\\"id", |script| {
@@ -637,7 +744,7 @@ mod tests {
             if calls == 1 {
                 Ok("started".into())
             } else {
-                Err(Error::Utm("Guest agent is not running".into()))
+                Err(applescript_error("Guest agent is not running"))
             }
         })
         .unwrap();
@@ -661,7 +768,7 @@ mod tests {
             assert!(result.ip_address.is_none());
             assert_eq!(calls, 1);
         }
-        assert!(query_vm_status("missing-id", |_| Err(Error::Utm("VM not found".into()))).is_err());
+        assert!(query_vm_status("missing-id", |_| Err(applescript_error("VM not found"))).is_err());
     }
 
     #[test]
@@ -881,7 +988,10 @@ mod tests {
             assert!(result.is_err());
             if let Err(Error::Utm(msg)) = result {
                 // Error message should contain something about syntax error
-                assert!(!msg.is_empty(), "Error message should not be empty");
+                assert!(
+                    !msg.to_string().is_empty(),
+                    "Error message should not be empty"
+                );
             } else {
                 panic!("Expected Utm error");
             }

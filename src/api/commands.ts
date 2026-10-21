@@ -64,8 +64,10 @@ export async function quitAnyway(): Promise<void> {
   return invoke<void>("quit_anyway");
 }
 
+// A string check rather than `isTauri()`, so CI can find the browser mock in a
+// production bundle.
 function isBrowserOnly(): boolean {
-  return typeof window !== "undefined" && !("__TAURI__" in window);
+  return typeof window !== "undefined" && !("isTauri" in window);
 }
 
 // Import mock data for browser-only mode
@@ -330,6 +332,14 @@ export async function getSystemInfo(): Promise<SystemInfo> {
 // ============================================================================
 // UTM Commands (macOS only)
 // ============================================================================
+
+/** Whether this Mac can run a UTM install. Intel Macs can't. */
+export async function isUtmSupported(): Promise<boolean> {
+  if (MOCK_ALLOWED && isBrowserOnly()) {
+    return true;
+  }
+  return invoke<boolean>("utm_supported");
+}
 
 /**
  * Check if UTM is installed and get its status.

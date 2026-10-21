@@ -25,8 +25,17 @@ use tauri::ipc::Channel;
 pub struct PendingUtmImages(std::sync::Mutex<std::collections::HashMap<String, TemporaryImage>>);
 
 impl PendingUtmImages {
+    fn insert(&self, image_path: String, image: TemporaryImage) {
+        self.lock().insert(image_path, image);
+    }
+
     fn take(&self, image_path: &str) -> Option<TemporaryImage> {
-        self.0.lock().unwrap().remove(image_path)
+        self.lock().remove(image_path)
+    }
+
+    /// A single insert or remove can't leave the map half-changed after a panic.
+    fn lock(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, TemporaryImage>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -415,6 +424,19 @@ fn utm_board() -> Result<&'static str, CommandError> {
     Ok(hai_core::utm::HAOS_BOARD)
 }
 
+/// Whether this Mac can run a UTM install, so the path selection can say so
+/// on an Intel Mac before anyone picks it.
+#[tauri::command]
+pub fn utm_supported() -> bool {
+    supports_utm(hai_core::utm::ensure_apple_silicon())
+}
+
+/// Only an unsupported platform marks the option. Any other failure keeps it
+/// open: the next screen reports it with its own message.
+fn supports_utm(apple_silicon: hai_core::Result<()>) -> bool {
+    !matches!(apple_silicon, Err(hai_core::Error::UnsupportedPlatform(_)))
+}
+
 /// Get the release for the same board used by UTM downloads.
 #[tauri::command]
 pub async fn get_utm_haos_release() -> Result<HaosRelease, CommandError> {
@@ -448,7 +470,7 @@ pub async fn download_utm_image(
         .operation
         .finish(run_utm_download(&Backend, board, &callback).await)?;
     let path = image.path().to_string_lossy().into_owned();
-    pending.0.lock().unwrap().insert(path.clone(), image);
+    pending.insert(path.clone(), image);
     Ok(path)
 }
 
@@ -540,19 +562,19 @@ async fn run_utm_creation<B: UtmBackend>(
     pending: &PendingUtmImages,
 ) -> Result<String, CommandError> {
     let image = pending.take(&config.image_path).ok_or_else(|| {
-        CommandError::new(
+        CommandError::with_message(
             "temporary_image_unavailable",
-            "Temporary image is no longer available; download it again",
+            &hai_core::message!("backend.utm.temporary_image_gone"),
             true,
         )
     })?;
     image.begin_utm_import().map_err(|error| {
-        CommandError::new(
+        CommandError::with_message(
             "utm",
-            format!(
-                "Could not prepare the UTM import: {error}. UTM was not contacted. \
-         Any retained source directory at {} can be removed manually.",
-                image.path().parent().unwrap().display()
+            &hai_core::message!(
+                "backend.utm.import_not_prepared",
+                detail = error.to_string(),
+                path = image.path().parent().unwrap().display().to_string(),
             ),
             false,
         )
@@ -560,13 +582,12 @@ async fn run_utm_creation<B: UtmBackend>(
     // Fully qualified: `create_vm` is defined on both UtmBackend and ProxmoxBackend.
     let result = UtmBackend::create_vm(backend, config, &hai_core::NoOpProgress).await;
     if let Err(hai_core::Error::UtmOperationUncertain(error)) = &result {
-        return Err(CommandError::new(
+        return Err(CommandError::with_message(
             "utm_operation_uncertain",
-            format!(
-                "UTM may still be importing the image: {error}. Source retained at {}. \
-             Check UTM before retrying. Remove the source directory manually only after \
-             confirming UTM has finished or stopped importing.",
-                image.path().parent().unwrap().display()
+            &hai_core::message!(
+                "backend.utm.import_uncertain",
+                detail = error,
+                path = image.path().parent().unwrap().display().to_string(),
             ),
             false,
         ));
@@ -759,6 +780,17 @@ pub async fn proxmox_get_vm_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_an_unsupported_platform_marks_utm_unsupported() {
+        assert!(supports_utm(Ok(())));
+        assert!(!supports_utm(Err(hai_core::Error::UnsupportedPlatform(
+            "UTM installs need a Mac with Apple silicon".into()
+        ))));
+        assert!(supports_utm(Err(hai_core::Error::InvalidConfig(
+            "Rosetta status unknown".into()
+        ))));
+    }
 
     #[tokio::test]
     async fn test_proxmox_certificate_rejects_http() {
@@ -1586,13 +1618,36 @@ mod mock_tests {
         let image = TemporaryImage::new(cache.path(), ImageFormat::Qcow2).unwrap();
         let path = image.path().to_string_lossy().into_owned();
         std::fs::write(&path, b"owned image").unwrap();
-        pending.0.lock().unwrap().insert(path.clone(), image);
+        pending.insert(path.clone(), image);
         let importing = pending.take(&path).unwrap();
         assert!(pending.take(&path).is_none());
         assert!(std::path::Path::new(&path).exists());
         drop(importing);
         assert!(!std::path::Path::new(&path).exists());
         assert!(user_file.exists());
+    }
+
+    #[test]
+    fn utm_registry_keeps_working_after_a_panic_while_locked() {
+        let cache = tempfile::tempdir().unwrap();
+        let pending = PendingUtmImages::default();
+        let image = TemporaryImage::new(cache.path(), ImageFormat::Qcow2).unwrap();
+        let path = image.path().to_string_lossy().into_owned();
+        pending.insert(path.clone(), image);
+        std::thread::scope(|scope| {
+            let panicked = scope.spawn(|| {
+                let _images = pending.0.lock().unwrap();
+                panic!("panic while the registry is locked");
+            });
+            assert!(panicked.join().is_err());
+        });
+        assert!(pending.0.is_poisoned());
+
+        assert!(pending.take(&path).is_some());
+        let image = TemporaryImage::new(cache.path(), ImageFormat::Qcow2).unwrap();
+        let path = image.path().to_string_lossy().into_owned();
+        pending.insert(path.clone(), image);
+        assert!(pending.take(&path).is_some());
     }
 
     struct UtmCreationBackend {
@@ -1630,16 +1685,23 @@ mod mock_tests {
                     name: config.name.clone(),
                     path: None,
                 }),
-                "rejected" => Err(hai_core::Error::Utm("Invalid configuration".into())),
-                "start-failed" => Err(hai_core::Error::UtmVmCreated(
-                    "The VM was created. Open UTM to start it.".into(),
-                )),
-                "timeout" => Err(hai_core::Error::UtmOperationUncertain(
-                    "AppleEvent timed out (-1712)".into(),
-                )),
-                "transport" => Err(hai_core::Error::UtmOperationUncertain(
-                    "Failed to wait for AppleScript".into(),
-                )),
+                "rejected" => Err(hai_core::Error::Utm(hai_core::message!(
+                    "backend.utm.applescript_error",
+                    detail = "Invalid configuration",
+                ))),
+                "start-failed" => Err(hai_core::Error::UtmVmCreated(hai_core::message!(
+                    "backend.utm.vm_created_not_started",
+                    name = config.name,
+                    detail = "",
+                ))),
+                "timeout" => Err(hai_core::Error::UtmOperationUncertain(hai_core::message!(
+                    "backend.utm.no_answer",
+                    detail = "AppleEvent timed out (-1712)",
+                ))),
+                "transport" => Err(hai_core::Error::UtmOperationUncertain(hai_core::message!(
+                    "backend.utm.applescript_lost",
+                    detail = "broken pipe",
+                ))),
                 "cancelled" => std::future::pending().await,
                 _ => unreachable!(),
             }
@@ -1673,11 +1735,7 @@ mod mock_tests {
                 std::fs::create_dir(path.parent().unwrap().join(".utm-import")).unwrap();
             }
             let pending = PendingUtmImages::default();
-            pending
-                .0
-                .lock()
-                .unwrap()
-                .insert(path.to_string_lossy().into_owned(), image);
+            pending.insert(path.to_string_lossy().into_owned(), image);
             let config = hai_core::UtmVmConfig {
                 name: "Test VM".into(),
                 image_path: path.to_string_lossy().into_owned(),
@@ -1718,12 +1776,26 @@ mod mock_tests {
                     )));
                     assert!(!error.message.contains(&config.image_path));
                     assert!(error.message.contains("manually"));
+                    // The frontend translates the sentence and the reason inside it
+                    assert_eq!(error.details["message_key"], "backend.utm.import_uncertain");
+                    assert_eq!(
+                        error.details["message_params"]["detail"]["key"],
+                        if outcome == "timeout" {
+                            "backend.utm.no_answer"
+                        } else {
+                            "backend.utm.applescript_lost"
+                        }
+                    );
                 }
                 if outcome == "start-failed" {
                     let error = result.as_ref().unwrap_err();
                     assert_eq!(error.code, "utm_vm_created");
                     assert!(!error.retryable);
                     assert!(error.message.contains("Open UTM"));
+                    assert_eq!(
+                        error.details["message_key"],
+                        "backend.utm.vm_created_not_started"
+                    );
                 }
                 if outcome == "marker-failure" {
                     let error = result.unwrap_err();
@@ -1732,6 +1804,14 @@ mod mock_tests {
                         .message
                         .contains(path.parent().unwrap().to_str().unwrap()));
                     assert!(error.message.contains("manually"));
+                    assert_eq!(
+                        error.details["message_key"],
+                        "backend.utm.import_not_prepared"
+                    );
+                    assert_eq!(
+                        error.details["message_params"]["path"],
+                        path.parent().unwrap().display().to_string()
+                    );
                 }
             }
             // This is the same removal used by the frontend's discard command.
@@ -1744,6 +1824,32 @@ mod mock_tests {
                 "{outcome}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_missing_temporary_image_is_a_catalog_message() {
+        let backend = UtmCreationBackend {
+            outcome: "success",
+            started: tokio::sync::Notify::new(),
+        };
+        let config = hai_core::UtmVmConfig {
+            name: "Test VM".into(),
+            image_path: "/nowhere/image.qcow2".into(),
+            cpu_cores: 2,
+            memory_mb: 2048,
+            disk_size_gb: 32,
+            auto_start: false,
+        };
+
+        let error = run_utm_creation(&backend, &config, &PendingUtmImages::default())
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "temporary_image_unavailable");
+        assert!(error.retryable);
+        assert_eq!(
+            error.details["message_key"],
+            "backend.utm.temporary_image_gone"
+        );
     }
 
     #[tokio::test]
