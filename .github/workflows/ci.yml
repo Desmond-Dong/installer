@@ -50,9 +50,10 @@ jobs:
           ACCEPTED_ADVISORIES: GHSA-vfj7-8cjw-p6xm
         run: |
           npm audit --package-lock-only --json > "$RUNNER_TEMP/audit.json" || true
-          jq -r --arg accepted "$ACCEPTED_ADVISORIES" '
+          jq -nr --arg accepted "$ACCEPTED_ADVISORIES" '
             ($accepted | split(" ")) as $accepted
-            | (.vulnerabilities // error("npm audit gave no report: \(.error.summary // .)"))
+            | (try input catch error("npm audit wrote no readable report"))
+            | (.vulnerabilities // error("npm audit gave no report: \(.message // .error.summary // .)"))
             | [.[].via[] | objects | .id = (.url | ltrimstr("https://github.com/advisories/"))]
             | unique_by(.id)
             | (.[] | select(.id | IN($accepted[]) | not) | "::error::\(.title) (\(.url))"),
