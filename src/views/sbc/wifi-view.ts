@@ -107,8 +107,7 @@ export class WifiView extends LitElement {
                 autocorrect="off"
                 .spellcheck=${false}
                 .value=${wifi.ssid}
-                @input=${(e: Event) =>
-                  this._update({ ssid: (e.target as WaInput).value ?? "" })}
+                @input=${this._onSsidInput}
               ></wa-input>
               <wa-input
                 type="password"
@@ -118,10 +117,7 @@ export class WifiView extends LitElement {
                 autocomplete="off"
                 password-toggle
                 .value=${wifi.password}
-                @input=${(e: Event) =>
-                  this._update({
-                    password: (e.target as WaInput).value ?? "",
-                  })}
+                @input=${this._onPasswordInput}
               ></wa-input>
             `
           : nothing}
@@ -135,6 +131,14 @@ export class WifiView extends LitElement {
       "wifi",
       (e.target as WaSwitch).checked ? { ssid: "", password: "" } : undefined
     );
+  }
+
+  private _onSsidInput(e: Event) {
+    this._update({ ssid: (e.target as WaInput).value ?? "" });
+  }
+
+  private _onPasswordInput(e: Event) {
+    this._update({ password: (e.target as WaInput).value ?? "" });
   }
 
   private _update(change: Partial<WifiConfig>) {
