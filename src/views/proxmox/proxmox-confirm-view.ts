@@ -290,24 +290,12 @@ export class ProxmoxConfirmView extends LitElement {
   }
 
   private _formatMemory(mb: number): string {
-    if (mb >= 1024) {
-      return localize("views.proxmox.proxmox_confirm_view.value_gb_ram", {
-        value0: formatNumber(Number((mb / 1024).toFixed(0)), {
-          maximumFractionDigits: 0,
-        }),
-      });
-    }
-    return localize("views.proxmox.proxmox_confirm_view.value_mb_ram", {
-      value0: formatNumber(mb, { maximumFractionDigits: 20 }),
+    return localize("views.proxmox.proxmox_confirm_view.value_gb_ram", {
+      value0: formatNumber(mb / 1024, { maximumFractionDigits: 0 }),
     });
   }
 
   private _formatDiskSize(gb: number): string {
-    if (gb >= 1024) {
-      return localize("components.drive_card.value_tb", {
-        value0: formatNumber(gb / 1024, { maximumFractionDigits: 20 }),
-      });
-    }
     return localize("components.drive_card.value_gb", {
       value0: formatNumber(gb, { maximumFractionDigits: 20 }),
     });

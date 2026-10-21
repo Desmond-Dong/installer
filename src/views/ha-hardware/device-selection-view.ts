@@ -282,14 +282,6 @@ export class HaHardwareDeviceSelectionView extends LitElement {
     wizardState.setSelection("deviceImage", hardware.image);
     wizardState.setSelection("deviceConfig", config);
     if (previous !== hardware.id) clearDriveSelection();
-
-    this.dispatchEvent(
-      new CustomEvent("device-selected", {
-        detail: { hardware },
-        bubbles: true,
-        composed: true,
-      })
-    );
   }
 }
 

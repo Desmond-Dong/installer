@@ -858,13 +858,9 @@ export class ProxmoxConfigureView extends LitElement {
   }
 
   private _formatDiskSize(gb: number): string {
-    return gb >= 1024
-      ? localize("components.drive_card.value_tb", {
-          value0: formatNumber(gb / 1024, { maximumFractionDigits: 20 }),
-        })
-      : localize("components.drive_card.value_gb", {
-          value0: formatNumber(gb, { maximumFractionDigits: 20 }),
-        });
+    return localize("components.drive_card.value_gb", {
+      value0: formatNumber(gb, { maximumFractionDigits: 20 }),
+    });
   }
 
   private _getCpuDescription(): string {

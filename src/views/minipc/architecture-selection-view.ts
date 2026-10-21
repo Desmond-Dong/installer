@@ -409,14 +409,6 @@ export class MiniPCArchitectureSelectionView extends LitElement {
     wizardState.setSelection("deviceName", device.name);
     wizardState.setSelection("deviceImage", device.image_url || "");
     wizardState.setSelection("deviceConfig", device.haos);
-
-    this.dispatchEvent(
-      new CustomEvent("device-selected", {
-        detail: { device },
-        bubbles: true,
-        composed: true,
-      })
-    );
   }
 }
 
