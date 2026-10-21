@@ -600,16 +600,12 @@ export async function proxmoxListNodes(
         status: "online",
         cpu_usage: 12.5,
         cpu_count: 16,
-        memory_used: 8 * 1024 * 1024 * 1024,
-        memory_total: 32 * 1024 * 1024 * 1024,
       },
       {
         name: "pve2",
         status: "online",
         cpu_usage: 8.2,
         cpu_count: 8,
-        memory_used: 4 * 1024 * 1024 * 1024,
-        memory_total: 16 * 1024 * 1024 * 1024,
       },
     ];
   }
@@ -647,7 +643,6 @@ export async function proxmoxListStorage(
             : []),
         ],
         available: 200 * 1024 * 1024 * 1024,
-        total: 500 * 1024 * 1024 * 1024,
         active: true,
       },
       {
@@ -655,7 +650,6 @@ export async function proxmoxListStorage(
         storage_type: "lvmthin",
         content: ["images", "rootdir"],
         available: 400 * 1024 * 1024 * 1024,
-        total: 1024 * 1024 * 1024 * 1024,
         active: true,
       },
     ];
