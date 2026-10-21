@@ -42,6 +42,7 @@
   "components.app_shell.connecting": "Connecting...",
   "components.app_shell.generic_mini_pc": "Generic (mini) PC",
   "components.app_shell.home_assistant_hardware": "Home Assistant hardware",
+  "components.app_shell.home_toolbox": "Home Toolbox",
   "components.app_shell.open_home_toolbox": "Open Home Toolbox",
   "components.app_shell.proxmox_server": "Proxmox server",
   "components.app_shell.raspberry_pi_other_boards": "Raspberry Pi & other boards",

@@ -1,5 +1,5 @@
 import { localize } from "../localization/localize.js";
-import { LitElement, html, css } from "lit";
+import { LitElement, html, css, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import {
   wizardState,
@@ -58,6 +58,17 @@ export class WizardShell extends LitElement {
       padding: 2rem;
     }
 
+    /* The step titles are headings below this one; the steps show the flow */
+    .flow-title {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
+    }
+
     .footer {
       display: flex;
       justify-content: space-between;
@@ -86,6 +97,16 @@ export class WizardShell extends LitElement {
   @state()
   private _wizardState: WizardState = wizardState.getState();
 
+  /** Whether the step is taller than the window, so it can be scrolled. */
+  @state()
+  private _scrolls = false;
+
+  private _resizeObserver = new ResizeObserver(() => this._checkScrolling());
+
+  /** What is being installed, as the page's main heading. */
+  @property({ type: String })
+  flowTitle = "";
+
   @property({ type: String })
   nextLabel = localize("common.next");
 
@@ -113,6 +134,24 @@ export class WizardShell extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     this._unsubscribe?.();
+    this._resizeObserver.disconnect();
+  }
+
+  // A keyboard can only scroll what it can focus, and some steps have
+  // nothing focusable in them. Only when they overflow, so it isn't an
+  // extra tab stop on every step.
+  private _observeContent(event: Event) {
+    const slot = event.target as HTMLSlotElement;
+    this._resizeObserver.disconnect();
+    this._resizeObserver.observe(slot.parentElement!);
+    for (const element of slot.assignedElements()) {
+      this._resizeObserver.observe(element);
+    }
+  }
+
+  private _checkScrolling() {
+    const content = this.renderRoot.querySelector(".content");
+    this._scrolls = !!content && content.scrollHeight > content.clientHeight;
   }
 
   get steps(): WizardStep[] {
@@ -133,7 +172,7 @@ export class WizardShell extends LitElement {
 
   render() {
     return html`
-      <div class="header">
+      <header class="header">
         <wa-button
           appearance="plain"
           @click=${this._onBack}
@@ -151,15 +190,16 @@ export class WizardShell extends LitElement {
         </div>
 
         <div class="header-right"></div>
-      </div>
+      </header>
 
-      <div class="content">
-        <slot></slot>
-      </div>
+      <main class="content" tabindex=${this._scrolls ? "0" : nothing}>
+        <h1 class="flow-title">${this.flowTitle}</h1>
+        <slot @slotchange=${this._observeContent}></slot>
+      </main>
 
       ${!this.hideFooter
         ? html`
-            <div class="footer">
+            <footer class="footer">
               <div class="footer-left">
                 <wa-button appearance="plain" @click=${this._onCancel}>
                   ${localize("common.cancel")}
@@ -179,7 +219,7 @@ export class WizardShell extends LitElement {
                     `
                   : ""}
               </div>
-            </div>
+            </footer>
           `
         : ""}
     `;

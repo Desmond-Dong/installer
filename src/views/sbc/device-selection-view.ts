@@ -49,6 +49,11 @@ export class DeviceSelectionView extends LitElement {
       max-width: 700px;
     }
 
+    /* Named by its label, which the heading above already shows. */
+    .devices-grid::part(form-control-label) {
+      display: none;
+    }
+
     /* The group's default layout is a flex column; the tiles want a grid. */
     .devices-grid::part(form-control-input) {
       display: grid;
@@ -212,7 +217,7 @@ export class DeviceSelectionView extends LitElement {
       <wa-radio-group
         class="devices-grid"
         radio-tag="device-card"
-        aria-label=${localize(
+        label=${localize(
           "views.sbc.device_selection_view.single_board_computer"
         )}
         .value=${this._selectedDeviceId ?? ""}

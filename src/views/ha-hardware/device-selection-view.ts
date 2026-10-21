@@ -56,6 +56,11 @@ export class HaHardwareDeviceSelectionView extends LitElement {
       max-width: 700px;
     }
 
+    /* Named by its label, which the heading above already shows. */
+    .devices-grid::part(form-control-label) {
+      display: none;
+    }
+
     /* The group's default layout is a flex column; the tiles want a grid. */
     .devices-grid::part(form-control-input) {
       display: grid;
@@ -237,7 +242,7 @@ export class HaHardwareDeviceSelectionView extends LitElement {
       <wa-radio-group
         class="devices-grid"
         radio-tag="device-card"
-        aria-label=${localize("components.app_shell.home_assistant_hardware")}
+        label=${localize("components.app_shell.home_assistant_hardware")}
         .value=${this._selectedDeviceId ?? ""}
         @change=${this._onDeviceChange}
       >

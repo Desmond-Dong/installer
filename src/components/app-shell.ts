@@ -205,26 +205,31 @@ export class AppShell extends LitElement {
     switch (this._currentView) {
       case "connection-check":
         return html`<connection-check-view
+          role="main"
           @connection-ready=${this._onConnectionReady}
           @connection-back=${this._onConnectionBack}
         ></connection-check-view>`;
       case "welcome":
         return html`<welcome-view
+          role="main"
           @navigate=${this._onNavigate}
         ></welcome-view>`;
       case "path-selection":
         return html`<path-selection-view
+          role="main"
           @navigate=${this._onNavigate}
           @select-path=${this._onSelectPath}
         ></path-selection-view>`;
       case "other-options":
         return html`<other-options-view
+          role="main"
           @navigate=${this._onNavigate}
         ></other-options-view>`;
       case "wizard":
         return this._renderWizard();
       default:
         return html`<welcome-view
+          role="main"
           @navigate=${this._onNavigate}
         ></welcome-view>`;
     }
@@ -270,6 +275,7 @@ export class AppShell extends LitElement {
 
     return html`
       <wizard-shell
+        .flowTitle=${flow ? this._flowTitle(flow) : ""}
         .nextDisabled=${nextDisabled ||
         this._proxmoxConnecting ||
         checkingSettings ||
@@ -294,6 +300,17 @@ export class AppShell extends LitElement {
         ${this._renderWizardStep(flow, currentStep?.id)}
       </wizard-shell>
     `;
+  }
+
+  private _flowTitle(flow: WizardFlow): string {
+    const titles: Record<WizardFlow, string> = {
+      sbc: localize("components.app_shell.raspberry_pi_other_boards"),
+      minipc: localize("components.app_shell.generic_mini_pc"),
+      "ha-hardware": localize("components.app_shell.home_assistant_hardware"),
+      proxmox: localize("components.app_shell.proxmox_server"),
+      vm: localize("components.app_shell.virtual_machine"),
+    };
+    return titles[flow];
   }
 
   private _getNextLabel(stepId: string | undefined): string {
@@ -830,6 +847,8 @@ export class AppShell extends LitElement {
   private _renderToolboxButton() {
     return html`
       <fab-button
+        role="complementary"
+        aria-label=${localize("components.app_shell.home_toolbox")}
         .path=${mdiToolboxOutline}
         label=${localize("components.app_shell.open_home_toolbox")}
         @click=${this._onToolboxOpen}
