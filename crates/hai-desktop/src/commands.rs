@@ -557,6 +557,13 @@ pub async fn check_utm_status() -> Result<hai_core::UtmStatus, CommandError> {
         .map_err(CommandError::from_query)
 }
 
+/// Ask macOS whether the installer may control UTM, before anything is
+/// downloaded. The first time, this shows the Automation prompt.
+#[tauri::command(async)]
+pub fn check_utm_automation() -> Result<(), CommandError> {
+    UtmBackend::check_automation(&Backend).map_err(CommandError::from_query)
+}
+
 /// Create a Home Assistant VM in UTM
 #[tauri::command]
 pub async fn create_utm_vm(
@@ -1202,6 +1209,22 @@ mod tests {
 
     #[test]
     #[cfg(feature = "mock")]
+    fn test_check_utm_automation_mock_returns_ok() {
+        assert!(check_utm_automation().is_ok());
+    }
+
+    // Asking again can't change the platform, so the check offers no retry.
+    #[cfg(not(feature = "mock"))] // asserts on the real backend's answers
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn test_check_utm_automation_unsupported_off_macos() {
+        let err = check_utm_automation().unwrap_err();
+        assert_eq!(err.code, "unsupported_platform");
+        assert!(!err.retryable);
+    }
+
+    #[test]
+    #[cfg(feature = "mock")]
     fn test_get_utm_vm_status_mock_returns_running_vm() {
         let result = get_utm_vm_status("test-vm".to_string());
         assert!(result.is_ok());
@@ -1748,6 +1771,10 @@ mod mock_tests {
 
     impl UtmBackend for UtmCreationBackend {
         async fn check_utm_status(&self) -> hai_core::Result<hai_core::UtmStatus> {
+            unreachable!()
+        }
+
+        fn check_automation(&self) -> hai_core::Result<()> {
             unreachable!()
         }
 
