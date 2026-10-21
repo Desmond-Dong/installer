@@ -126,7 +126,6 @@ describe("api/commands", () => {
             cpu_cores: 2,
             memory_mb: 4096,
             disk_size_gb: 32,
-            auto_start: true,
           },
           onProgress,
           "proxmox-test"

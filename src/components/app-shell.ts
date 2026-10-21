@@ -122,12 +122,20 @@ export class AppShell extends LitElement {
   @state()
   private _showStopDialog = false;
 
+  /** Asks before leaving a VM install that can no longer stop */
+  @state()
+  private _showLeaveDialog = false;
+
   @state()
   private _stoppingFlash = false;
 
   /** Whether the running VM install can still stop without leaving anything */
   @state()
   private _vmStoppable = false;
+
+  /** Whether the VM runs and only Home Assistant is awaited */
+  @state()
+  private _vmLeavable = false;
 
   @state()
   private _showQuitDialog = false;
@@ -151,6 +159,7 @@ export class AppShell extends LitElement {
     this._stopCloseListener = onCloseBlocked(() => {
       // One question at a time: quitting is the bigger one
       this._showStopDialog = false;
+      this._showLeaveDialog = false;
       this._showQuitDialog = true;
     }).catch((error: unknown) => {
       logFrontendError(error);
@@ -196,6 +205,20 @@ export class AppShell extends LitElement {
         primary-variant="danger"
         @dialog-primary=${this._onStopInstallation}
         @dialog-secondary=${this._onKeepInstalling}
+      ></info-dialog>
+      <info-dialog
+        class="leave-dialog"
+        ?open=${this._showLeaveDialog}
+        .heading=${localize("components.app_shell.leave_installation_title")}
+        .message=${localize("components.app_shell.leave_installation_message", {
+          address: this._wizardState.selections.ipAddress
+            ? `http://${this._wizardState.selections.ipAddress}`
+            : "http://homeassistant.local",
+        })}
+        .primaryLabel=${localize("components.app_shell.leave_installation")}
+        .secondaryLabel=${localize("components.app_shell.keep_waiting")}
+        @dialog-primary=${this._onLeaveInstallation}
+        @dialog-secondary=${this._onKeepWaiting}
       ></info-dialog>
       <info-dialog
         class="quit-dialog"
@@ -259,9 +282,11 @@ export class AppShell extends LitElement {
     const vmRunning = this._isVmInstallRunning();
 
     // Determine when to hide footer (during active processes)
+    // Once the VM runs, waiting for Home Assistant can take an hour, and
+    // leaving no longer leaves anything half done
     const hideFooter =
       (flashRunning && this._stoppingFlash) ||
-      (vmRunning && !this._vmStoppable);
+      (vmRunning && !this._vmStoppable && !this._vmLeavable);
 
     // Determine when to hide back button
     const hideBack =
@@ -304,6 +329,7 @@ export class AppShell extends LitElement {
         @flash-error=${this._onFlashError}
         @flash-stop-failed=${this._onFlashStopFailed}
         @install-stoppable=${this._onInstallStoppable}
+        @install-leavable=${this._onInstallLeavable}
       >
         ${this._renderWizardStep(flow, currentStep?.id)}
       </wizard-shell>
@@ -519,8 +545,9 @@ export class AppShell extends LitElement {
       return;
     }
     if (this._isVmInstallRunning()) {
-      // Cancel only shows while the install can stop, but it may have moved on
       if (this._vmStoppable) this._showStopDialog = true;
+      else if (this._vmLeavable) this._showLeaveDialog = true;
+      // Otherwise Cancel showed, but the install moved on to creating the VM
       return;
     }
 
@@ -540,6 +567,7 @@ export class AppShell extends LitElement {
   private _resetErrorState() {
     this._stoppingFlash = false;
     this._vmStoppable = false;
+    this._vmLeavable = false;
     this._flashError = false;
     this._utmInstallError = false;
     this._proxmoxInstallError = false;
@@ -796,6 +824,19 @@ export class AppShell extends LitElement {
     this._showStopDialog = false;
   }
 
+  private _onLeaveInstallation() {
+    // Leaving detaches the progress view, which stops its waiting; the VM
+    // and Home Assistant carry on
+    this._showLeaveDialog = false;
+    this._resetErrorState();
+    wizardState.reset();
+    this._currentView = "welcome";
+  }
+
+  private _onKeepWaiting() {
+    this._showLeaveDialog = false;
+  }
+
   private _onStopInstallation() {
     this._showStopDialog = false;
     if (this._isVmInstallRunning()) {
@@ -839,6 +880,11 @@ export class AppShell extends LitElement {
     if (!this._vmStoppable && this._isVmInstallRunning()) {
       this._showStopDialog = false;
     }
+  }
+
+  private _onInstallLeavable(event: CustomEvent<{ leavable: boolean }>) {
+    this._vmLeavable = event.detail.leavable;
+    if (!this._vmLeavable) this._showLeaveDialog = false;
   }
 
   private _onUtmInstallComplete() {
