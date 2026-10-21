@@ -20,7 +20,7 @@ import {
 import type {
   FlashProgress,
   FlashStage,
-  ProxmoxSession,
+  ProxmoxSessionHandle,
   ProxmoxVmConfig,
   ProxmoxVmResult,
 } from "../../api/types.js";
@@ -366,7 +366,7 @@ export class ProxmoxProgressView extends LitElement {
 
   /** Create and start the VM, reporting the backend's progress */
   private async _createVm(
-    session: ProxmoxSession,
+    session: ProxmoxSessionHandle,
     config: ProxmoxVmConfig,
     signal: AbortSignal
   ): Promise<ProxmoxVmResult> {
@@ -388,7 +388,7 @@ export class ProxmoxProgressView extends LitElement {
   }
 
   private _reportCreation(
-    session: ProxmoxSession,
+    session: ProxmoxSessionHandle,
     config: ProxmoxVmConfig,
     signal: AbortSignal
   ): Promise<ProxmoxVmResult> {
@@ -442,7 +442,7 @@ export class ProxmoxProgressView extends LitElement {
    * expired session, ends the wait right away with that error.
    */
   private async _waitForVmIp(
-    session: ProxmoxSession,
+    session: ProxmoxSessionHandle,
     { node, vm_id }: ProxmoxVmResult,
     signal: AbortSignal
   ): Promise<string> {

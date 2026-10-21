@@ -123,8 +123,8 @@ describe("app-shell", () => {
     await el.updateComplete;
     wizardState.setSelection("proxmoxSession", {
       server_url: "https://pve:8006",
-      ticket: "test",
-      csrf_token: "test",
+      id: 1,
+      certificate_sha256: null,
     });
     wizardState.setSelection("proxmoxNode", "pve");
     wizardState.setSelection("proxmoxStorage", "local");
@@ -497,8 +497,8 @@ describe("app-shell", () => {
       await el.updateComplete;
       wizardState.setSelection("proxmoxSession", {
         server_url: "https://pve:8006",
-        ticket: "test",
-        csrf_token: "test",
+        id: 1,
+        certificate_sha256: null,
       });
       mockBackend?.();
       await goToStep(el, "install");

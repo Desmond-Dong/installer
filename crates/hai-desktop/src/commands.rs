@@ -9,13 +9,15 @@ use crate::command_error::CommandError;
 use crate::diagnostics::Operation;
 use crate::flash_state::FlashState;
 use crate::install_jobs::InstallJobs;
+use crate::proxmox_sessions::ProxmoxSessions;
 use hai_core::download::TemporaryImage;
 use hai_core::keep_awake::KeepAwake;
 use hai_core::{
     BlockDevice, DeviceBackend, DeviceManifest, ExpectedDevice, FlashProgress, FlashRequest,
     FlashResult, FlashStage, HaosRelease, HostBackend, ImageFormat, ProgressCallback,
-    ProxmoxBackend, ProxmoxBridge, ProxmoxCredentials, ProxmoxNode, ProxmoxSession, ProxmoxStorage,
-    ProxmoxVmConfig, ProxmoxVmResult, ReleaseSource, SystemInfo, UtmBackend, VmStatusInfo,
+    ProxmoxBackend, ProxmoxBridge, ProxmoxCredentials, ProxmoxNode, ProxmoxSessionHandle,
+    ProxmoxStorage, ProxmoxVmConfig, ProxmoxVmResult, ReleaseSource, SystemInfo, UtmBackend,
+    VmStatusInfo,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -648,22 +650,29 @@ pub async fn proxmox_certificate_fingerprint(
     )
 }
 
-/// Connect to a Proxmox VE server
+/// Connect to a Proxmox VE server. The session stays here; the page gets a
+/// handle to name it by.
 #[tauri::command]
 pub async fn proxmox_connect(
     credentials: ProxmoxCredentials,
-) -> Result<ProxmoxSession, CommandError> {
+    sessions: tauri::State<'_, ProxmoxSessions>,
+) -> Result<ProxmoxSessionHandle, CommandError> {
     Operation::new("proxmox_connect").finish(
         Backend
             .authenticate(&credentials)
             .await
+            .map(|session| sessions.keep(session))
             .map_err(CommandError::from),
     )
 }
 
 /// List available nodes on Proxmox
 #[tauri::command]
-pub async fn proxmox_list_nodes(session: ProxmoxSession) -> Result<Vec<ProxmoxNode>, CommandError> {
+pub async fn proxmox_list_nodes(
+    session_id: u32,
+    sessions: tauri::State<'_, ProxmoxSessions>,
+) -> Result<Vec<ProxmoxNode>, CommandError> {
+    let session = sessions.get(session_id)?;
     Backend
         .list_nodes(&session)
         .await
@@ -673,9 +682,11 @@ pub async fn proxmox_list_nodes(session: ProxmoxSession) -> Result<Vec<ProxmoxNo
 /// List available storage on a Proxmox node
 #[tauri::command]
 pub async fn proxmox_list_storage(
-    session: ProxmoxSession,
+    session_id: u32,
     node: String,
+    sessions: tauri::State<'_, ProxmoxSessions>,
 ) -> Result<Vec<ProxmoxStorage>, CommandError> {
+    let session = sessions.get(session_id)?;
     Backend
         .list_storage(&session, &node)
         .await
@@ -685,9 +696,11 @@ pub async fn proxmox_list_storage(
 /// List bridges and SDN VNets available on a Proxmox node.
 #[tauri::command]
 pub async fn proxmox_list_bridges(
-    session: ProxmoxSession,
+    session_id: u32,
     node: String,
+    sessions: tauri::State<'_, ProxmoxSessions>,
 ) -> Result<Vec<ProxmoxBridge>, CommandError> {
+    let session = sessions.get(session_id)?;
     Backend
         .list_bridges(&session, &node)
         .await
@@ -700,11 +713,17 @@ pub async fn proxmox_list_bridges(
 /// whether this call changed the storage, so the frontend can remind the user.
 #[tauri::command]
 pub async fn proxmox_enable_storage_import(
-    session: ProxmoxSession,
+    session_id: u32,
     node: String,
     storage: String,
+    sessions: tauri::State<'_, ProxmoxSessions>,
 ) -> Result<bool, CommandError> {
-    Operation::new("proxmox_enable_import").finish(
+    let operation = Operation::new("proxmox_enable_import");
+    let session = match sessions.get(session_id) {
+        Ok(session) => session,
+        Err(error) => return operation.finish(Err(error)),
+    };
+    operation.finish(
         Backend
             .enable_storage_import(&session, &node, &storage)
             .await
@@ -714,7 +733,11 @@ pub async fn proxmox_enable_storage_import(
 
 /// Get the next available VM ID on Proxmox
 #[tauri::command]
-pub async fn proxmox_get_next_vm_id(session: ProxmoxSession) -> Result<u32, CommandError> {
+pub async fn proxmox_get_next_vm_id(
+    session_id: u32,
+    sessions: tauri::State<'_, ProxmoxSessions>,
+) -> Result<u32, CommandError> {
+    let session = sessions.get(session_id)?;
     Backend
         .get_next_vm_id(&session)
         .await
@@ -724,17 +747,22 @@ pub async fn proxmox_get_next_vm_id(session: ProxmoxSession) -> Result<u32, Comm
 /// Create a Home Assistant VM on Proxmox
 #[tauri::command]
 pub async fn proxmox_create_vm(
-    session: ProxmoxSession,
+    session_id: u32,
     config: ProxmoxVmConfig,
     attempt: String,
     progress_channel: Channel<FlashProgress>,
     jobs: tauri::State<'_, InstallJobs>,
+    sessions: tauri::State<'_, ProxmoxSessions>,
 ) -> Result<ProxmoxVmResult, CommandError> {
     let job = jobs.begin(attempt);
     let _running = running_job();
     let _awake = keep_awake("Installing Home Assistant on Proxmox").await;
     let callback = TauriProgressCallback::new(&progress_channel, "proxmox_install")
         .cancellable(job.cancelled());
+    let session = match sessions.get(session_id) {
+        Ok(session) => session,
+        Err(error) => return callback.operation.finish(Err(error)),
+    };
     // Fully qualified: `create_vm` is defined on both ProxmoxBackend and UtmBackend.
     callback.operation.finish(
         ProxmoxBackend::create_vm(&Backend, &session, &config, &callback)
@@ -763,10 +791,12 @@ pub fn cancel_vm_install(attempt: String, jobs: tauri::State<'_, InstallJobs>) {
 /// Get the run status and IP address of a Proxmox VM
 #[tauri::command]
 pub async fn proxmox_get_vm_status(
-    session: ProxmoxSession,
+    session_id: u32,
     node: String,
     vm_id: u32,
+    sessions: tauri::State<'_, ProxmoxSessions>,
 ) -> Result<VmStatusInfo, CommandError> {
+    let session = sessions.get(session_id)?;
     // Fully qualified: `vm_status` is defined on both ProxmoxBackend and UtmBackend.
     ProxmoxBackend::vm_status(&Backend, &session, &node, vm_id)
         .await
@@ -780,6 +810,22 @@ pub async fn proxmox_get_vm_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tauri::Manager;
+
+    /// A mock app logged in to `server_url`, and the handle the page would get.
+    pub(super) fn logged_in(server_url: &str) -> (tauri::App<tauri::test::MockRuntime>, u32) {
+        let app = tauri::test::mock_app();
+        app.manage(ProxmoxSessions::default());
+        let handle = app
+            .state::<ProxmoxSessions>()
+            .keep(hai_core::ProxmoxSession {
+                server_url: server_url.into(),
+                ticket: "fixture".into(),
+                csrf_token: "fixture".into(),
+                certificate_sha256: None,
+            });
+        (app, handle.id)
+    }
 
     #[test]
     fn only_an_unsupported_platform_marks_utm_unsupported() {
@@ -808,18 +854,13 @@ mod tests {
             totp: None,
             certificate_sha256: None,
         };
-        assert!(proxmox_connect(credentials)
+        let (app, session) = logged_in("http://127.0.0.1:1");
+        assert!(proxmox_connect(credentials, app.state())
             .await
             .unwrap_err()
             .message
             .contains("HTTPS"));
-        let session = ProxmoxSession {
-            server_url: "http://127.0.0.1:1".into(),
-            ticket: "fixture".into(),
-            csrf_token: "fixture".into(),
-            certificate_sha256: None,
-        };
-        assert!(proxmox_list_nodes(session)
+        assert!(proxmox_list_nodes(session, app.state())
             .await
             .unwrap_err()
             .message
@@ -831,13 +872,8 @@ mod tests {
     #[cfg(not(feature = "mock"))]
     #[tokio::test]
     async fn proxmox_list_bridges_returns_a_structured_lookup_error() {
-        let session = ProxmoxSession {
-            server_url: "http://127.0.0.1:1".into(),
-            ticket: "fixture".into(),
-            csrf_token: "fixture".into(),
-            certificate_sha256: None,
-        };
-        let error = proxmox_list_bridges(session, "pve".into())
+        let (app, session) = logged_in("http://127.0.0.1:1");
+        let error = proxmox_list_bridges(session, "pve".into(), app.state())
             .await
             .unwrap_err();
 
@@ -1438,9 +1474,11 @@ mod tests {
 
 #[cfg(all(test, feature = "mock"))]
 mod mock_tests {
+    use super::tests::logged_in;
     use super::*;
     use hai_core::{BackendMock, NoOpProgress};
     use serial_test::serial;
+    use tauri::Manager;
 
     struct LifecycleBackend {
         cache: tempfile::TempDir,
@@ -1854,13 +1892,8 @@ mod mock_tests {
 
     #[tokio::test]
     async fn proxmox_list_bridges_returns_mock_bridge() {
-        let session = ProxmoxSession {
-            server_url: "https://proxmox.example:8006".to_string(),
-            ticket: "mock-ticket".to_string(),
-            csrf_token: "mock-csrf-token".to_string(),
-            certificate_sha256: None,
-        };
-        let bridges = proxmox_list_bridges(session, "pve".to_string())
+        let (app, session) = logged_in("https://proxmox.example:8006");
+        let bridges = proxmox_list_bridges(session, "pve".to_string(), app.state())
             .await
             .unwrap();
 
@@ -1873,13 +1906,8 @@ mod mock_tests {
 
     #[tokio::test]
     async fn proxmox_get_vm_status_asks_the_proxmox_backend() {
-        let session = ProxmoxSession {
-            server_url: "https://proxmox.example:8006".to_string(),
-            ticket: "mock-ticket".to_string(),
-            csrf_token: "mock-csrf-token".to_string(),
-            certificate_sha256: None,
-        };
-        let status = proxmox_get_vm_status(session, "pve".to_string(), 100)
+        let (app, session) = logged_in("https://proxmox.example:8006");
+        let status = proxmox_get_vm_status(session, "pve".to_string(), 100, app.state())
             .await
             .unwrap();
 
@@ -1890,23 +1918,23 @@ mod mock_tests {
 
     #[tokio::test]
     async fn enable_import_command_uses_mock_backend() {
-        let session = ProxmoxSession {
-            server_url: "https://example.invalid:8006".to_string(),
-            ticket: "mock-ticket".to_string(),
-            csrf_token: "mock-csrf".to_string(),
-            certificate_sha256: None,
-        };
+        let (app, session) = logged_in("https://example.invalid:8006");
         assert!(!proxmox_enable_storage_import(
-            session.clone(),
+            session,
             "pve".to_string(),
-            "local".to_string()
+            "local".to_string(),
+            app.state()
         )
         .await
         .unwrap());
-        let error =
-            proxmox_enable_storage_import(session, "pve".to_string(), "local-lvm".to_string())
-                .await
-                .unwrap_err();
+        let error = proxmox_enable_storage_import(
+            session,
+            "pve".to_string(),
+            "local-lvm".to_string(),
+            app.state(),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(error.code, "proxmox_api");
     }
 
