@@ -34,7 +34,7 @@ export class UtmCheckView extends LitElement {
       display: flex;
       flex-direction: column;
       align-items: center;
-      height: 100%;
+      min-height: 100%;
     }
 
     h2 {
@@ -48,7 +48,7 @@ export class UtmCheckView extends LitElement {
     .subtitle {
       font-size: 1rem;
       color: var(--ha-secondary-text-color, #727272);
-      margin: 0 0 1rem 0;
+      margin: 0 0 1.5rem 0;
       text-align: center;
     }
 
@@ -62,6 +62,7 @@ export class UtmCheckView extends LitElement {
       border: 1px solid var(--ha-border-color, #e0e0e0);
       border-radius: 12px;
       width: 100%;
+      box-sizing: border-box;
       max-width: 500px;
     }
 
@@ -165,6 +166,7 @@ export class UtmCheckView extends LitElement {
       border: 1px solid rgba(255, 152, 0, 0.3);
       border-radius: 12px;
       width: 100%;
+      box-sizing: border-box;
       max-width: 500px;
       margin-bottom: 1rem;
     }

@@ -101,8 +101,10 @@ export class AppShell extends LitElement {
   @state()
   private _installRetryable = false;
 
+  // The flow the running Proxmox connect started in. Leaving the flow
+  // replaces it, so a connect left behind holds up nothing.
   @state()
-  private _proxmoxConnecting = false;
+  private _connectingFlow?: number;
 
   // The selections the running Proxmox check started from. Navigating,
   // cancelling or changing a choice replaces them, so a check left behind
@@ -238,6 +240,7 @@ export class AppShell extends LitElement {
 
     const checkingSettings =
       this._checkingProxmox === this._wizardState.selections;
+    const connecting = this._connectingFlow === wizardState.flowGeneration;
 
     // A running flash keeps only Cancel, until it is stopping
     const flashRunning = currentStep?.id === "flash" && !this._flashError;
@@ -271,10 +274,10 @@ export class AppShell extends LitElement {
     return html`
       <wizard-shell
         .nextDisabled=${nextDisabled ||
-        this._proxmoxConnecting ||
+        connecting ||
         checkingSettings ||
         this._verifyingDrive}
-        .nextLabel=${this._proxmoxConnecting
+        .nextLabel=${connecting
           ? localize("components.app_shell.connecting")
           : checkingSettings
             ? localize("components.app_shell.checking_settings")
@@ -285,6 +288,7 @@ export class AppShell extends LitElement {
         .hideBack=${hideBack}
         .hideNext=${hideNext}
         @wizard-cancel=${this._onWizardCancel}
+        @wizard-exit=${this._onWizardExit}
         @wizard-next=${this._onWizardNext}
         @flash-complete=${this._onFlashComplete}
         @flash-error=${this._onFlashError}
@@ -501,6 +505,13 @@ export class AppShell extends LitElement {
     this._currentView = "welcome";
   }
 
+  /** Back on the first step returns to where the flow was picked. */
+  private _onWizardExit() {
+    this._resetErrorState();
+    wizardState.reset();
+    this._currentView = "path-selection";
+  }
+
   /** A stale error flag would show Cancel/"Try again" over the next live write. */
   private _resetErrorState() {
     this._stoppingFlash = false;
@@ -576,14 +587,17 @@ export class AppShell extends LitElement {
         | (HTMLElement & { connect: () => Promise<boolean> })
         | null;
       if (connectView) {
-        this._proxmoxConnecting = true;
+        const generation = wizardState.flowGeneration;
+        this._connectingFlow = generation;
         try {
           const success = await connectView.connect();
           if (!success) {
             return; // Stay on current step, error shown in view
           }
         } finally {
-          this._proxmoxConnecting = false;
+          if (this._connectingFlow === generation) {
+            this._connectingFlow = undefined;
+          }
         }
       }
     }

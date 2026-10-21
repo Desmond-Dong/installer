@@ -94,7 +94,9 @@ test.describe("Home Assistant hardware flow", () => {
       ).toBeVisible();
     }
     await expect(next(page)).toHaveJSProperty("disabled", true);
-    await expect(back(page)).toHaveJSProperty("disabled", true);
+    // Back leads out of the flow, to the path selection
+    await back(page).click();
+    await expect(page.locator("path-selection-view")).toBeVisible();
   });
 
   for (const scenario of scenarios) {

@@ -366,6 +366,61 @@ describe("app-shell", () => {
     }
   });
 
+  it("returns to path selection when Back leaves the first step", async () => {
+    await enterSbcFlow(el);
+    wizardState.setSelection("device", "rpi5");
+
+    fire(shellOf(el), "wizard-exit");
+    await el.updateComplete;
+
+    expect(el.shadowRoot!.querySelector("path-selection-view")).to.exist;
+    expect(shellOf(el)).to.equal(null);
+    expect(wizardState.getState().currentFlow).to.equal(null);
+    expect(wizardState.getState().selections).to.deep.equal({});
+  });
+
+  it("does not hold up a new flow with a Proxmox connect left behind", async () => {
+    const fingerprint = deferred<string | null>();
+    mockTauriIpc((cmd) => {
+      if (cmd === "check_connection") return undefined;
+      if (cmd === "proxmox_certificate_fingerprint") return fingerprint.promise;
+      throw new Error(cmd);
+    });
+    const enterProxmox = async () => {
+      fire(
+        el.shadowRoot!.querySelector("path-selection-view")!,
+        "select-path",
+        {
+          path: "proxmox",
+        }
+      );
+      await waitUntil(
+        () => !!shellOf(el)?.querySelector("proxmox-connect-view")
+      );
+    };
+    fire(el.shadowRoot!.querySelector("welcome-view")!, "navigate", {
+      view: "path-selection",
+    });
+    await el.updateComplete;
+    await enterProxmox();
+    Object.assign(shellOf(el).querySelector("proxmox-connect-view")!, {
+      _serverUrl: "https://pve:8006",
+      _password: "test",
+    });
+
+    fire(shellOf(el), "wizard-next");
+    await waitUntil(() => shellOf(el).nextDisabled);
+    fire(shellOf(el), "wizard-exit");
+    await el.updateComplete;
+    await enterProxmox();
+
+    expect(shellOf(el).nextDisabled).to.be.false;
+    expect(shellOf(el).nextLabel).to.equal("Next");
+    fingerprint.resolve(null);
+    await settle();
+    expect(wizardState.currentStep?.id).to.equal("connection");
+  });
+
   it("asks before erasing the drive for a Home Assistant hardware installer", async () => {
     await enterSbcFlow(el);
     wizardState.startFlow("ha-hardware");

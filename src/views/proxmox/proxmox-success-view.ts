@@ -15,11 +15,12 @@ export class ProxmoxSuccessView extends LitElement {
   static styles = css`
     :host {
       display: block;
-      height: 100%;
+      min-height: 100%;
     }
 
     .import-reminder {
       width: 100%;
+      box-sizing: border-box;
       max-width: 500px;
       margin: 0 auto 2rem;
       padding: 0.75rem 0 0.75rem 1rem;
