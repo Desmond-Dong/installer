@@ -27,7 +27,7 @@ export class MiniPCArchitectureSelectionView extends LitElement {
       display: flex;
       flex-direction: column;
       align-items: center;
-      height: 100%;
+      min-height: 100%;
     }
 
     h2 {

@@ -65,8 +65,8 @@ describe("other-options-view", () => {
     expect(shown.map((card) => card.title)).to.deep.equal(
       OPTIONS.map(([title]) => title)
     );
-    expect(shown.map((card) => card.image)).to.deep.equal(
-      OPTIONS.map(([, icon]) => `/assets/icons/${icon}.svg`)
+    expect(shown.map((card) => card.icon)).to.deep.equal(
+      OPTIONS.map(([, icon]) => icon)
     );
     for (const card of shown) {
       expect(card.description).to.not.be.empty;

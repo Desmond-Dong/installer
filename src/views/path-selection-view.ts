@@ -2,6 +2,7 @@ import { localize } from "../localization/localize.js";
 import { LitElement, html, css } from "lit";
 import { ViewAccessibility } from "../utils/view-accessibility.js";
 import { customElement, state } from "lit/decorators.js";
+import { pageHeaderStyles } from "../utils/page-header.js";
 
 import "@home-assistant/webawesome/dist/components/button/button.js";
 import "../components/option-card.js";
@@ -19,17 +20,12 @@ export type InstallationPath =
 export class PathSelectionView extends LitElement {
   protected readonly _accessibility = new ViewAccessibility(this);
   static styles = css`
+    ${pageHeaderStyles}
     :host {
       display: flex;
       flex-direction: column;
+      box-sizing: border-box;
       height: 100%;
-      padding: 2rem;
-    }
-
-    .header {
-      display: flex;
-      align-items: center;
-      margin-bottom: 2rem;
     }
 
     .content {
@@ -37,14 +33,17 @@ export class PathSelectionView extends LitElement {
       display: flex;
       flex-direction: column;
       align-items: center;
-      justify-content: center;
+      overflow-y: auto;
+      padding: 1rem 2rem 2rem;
     }
 
+    /* The auto margins center the options while they fit; once they don't,
+       the list scrolls from the top instead of being cut off */
     h1 {
       font-size: 1.75rem;
       font-weight: 400;
       color: var(--ha-text-color, #212121);
-      margin: 0 0 0.5rem 0;
+      margin: auto 0 0.5rem 0;
       text-align: center;
     }
 
@@ -61,6 +60,7 @@ export class PathSelectionView extends LitElement {
       gap: 1.5rem;
       max-width: 900px;
       width: 100%;
+      margin-bottom: auto;
     }
 
     .other-options {
