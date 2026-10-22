@@ -16,6 +16,7 @@ import {
   DEFAULT_DISK_SIZE_GB,
   DEFAULT_MEMORY_MB,
   DEFAULT_UTM_VM_NAME,
+  isValidUtmVmName,
 } from "../../state/vm-defaults.js";
 import { settingStyles } from "../../utils/setting-styles.js";
 import "../../components/vm-resources.js";
@@ -138,9 +139,17 @@ export class UtmConfigureView extends LitElement {
     wizardState.setSelection("diskSizeGb", this._diskSizeGb);
   }
 
+  private get _nameError(): string | undefined {
+    return isValidUtmVmName(this._vmName)
+      ? undefined
+      : localize("views.utm.utm_configure_view.vm_name_required");
+  }
+
   private _onNameChange(e: Event) {
-    const input = e.target as WaInput;
-    this._vmName = input.value || DEFAULT_UTM_VM_NAME;
+    // Kept as typed: falling back to the default here wrote it back into a
+    // cleared field, in front of whatever was typed next. _nameError holds
+    // Next back instead.
+    this._vmName = (e.target as WaInput).value ?? "";
     this._saveSelections();
   }
 
@@ -218,12 +227,18 @@ export class UtmConfigureView extends LitElement {
               .value=${this._vmName}
               @input=${this._onNameChange}
               placeholder=${DEFAULT_UTM_VM_NAME}
-            ></wa-input>
-            <p class="setting-description">
-              ${localize(
-                "views.utm.utm_configure_view.shown_in_utm_s_virtual_machine_list"
-              )}
-            </p>
+              .customError=${this._nameError ?? null}
+            >
+              <!-- In the hint slot, so the field describes itself with it.
+                Not role="alert": ViewAccessibility focuses a new alert, which
+                would pull focus out of the field halfway through typing -->
+              <span slot="hint" class="name-hint" aria-live="polite"
+                >${this._nameError ??
+                localize(
+                  "views.utm.utm_configure_view.shown_in_utm_s_virtual_machine_list"
+                )}</span
+              >
+            </wa-input>
           </div>
         </div>
 
