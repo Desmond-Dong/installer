@@ -420,11 +420,13 @@ jobs:
     # the DMG they upload can be opened without Gatekeeper warnings. The Apple
     # credentials live in the protected `release` environment, which only main
     # may deploy to, so pull request builds never see them and stay unsigned.
-    environment: ${{ matrix.os == 'macos-latest' && github.event_name != 'pull_request' && 'release' || '' }}
+    environment: ${{ matrix.os == 'macos-latest' && github.ref == 'refs/heads/main' && 'release' || '' }}
     env:
       BUILD_TARGET: ${{ matrix.target }}
       BUNDLE_DIR: target/${{ matrix.target }}/release/bundle
-      SIGN_MACOS: ${{ matrix.os == 'macos-latest' && github.event_name != 'pull_request' }}
+      # Signing needs secrets the release environment holds; other branches,
+      # like the China mirror branch, build unsigned DMGs.
+      SIGN_MACOS: ${{ matrix.os == 'macos-latest' && github.ref == 'refs/heads/main' }}
     strategy:
       fail-fast: false
       matrix:
