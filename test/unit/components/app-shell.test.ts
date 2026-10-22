@@ -297,7 +297,7 @@ describe("app-shell", () => {
         expect(command).to.equal("check_connection");
         return ++calls === 1
           ? Promise.reject(
-              "Cannot reach version.home-assistant.io. Check your internet connection and try again."
+              "Cannot reach version.hasscn.top. Check your internet connection and try again."
             )
           : retry.promise;
       });

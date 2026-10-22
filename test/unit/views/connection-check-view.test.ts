@@ -27,7 +27,7 @@ describe("connection-check-view", () => {
     expect(el.shadowRoot!.textContent).to.contain("Checking connection");
     expect(ready).to.equal(0);
     first.reject(
-      "Cannot reach version.home-assistant.io. Check your internet connection and try again."
+      "Cannot reach version.hasscn.top. Check your internet connection and try again."
     );
     await waitUntil(() => !!el.shadowRoot!.querySelector('[role="alert"]'));
     expect(el.shadowRoot!.textContent).to.contain(
