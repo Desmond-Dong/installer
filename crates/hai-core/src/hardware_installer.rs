@@ -106,13 +106,12 @@ mod tests {
 
     #[test]
     fn installers_come_from_the_buildroot_installer_releases() {
+        const BASE: &str = "https://github.com/NabuCasa/buildroot-installer/releases/download/";
         for installer in &INSTALLERS {
-            let Some(url) = installer.download_url.strip_prefix("https://github.com/") else {
+            let Some(release) = installer.download_url.strip_prefix(BASE) else {
                 continue;
             };
-            let (repo, path) = url.split_once('/').unwrap();
-            assert_eq!(repo, "NabuCasa/buildroot-installer");
-            let (tag, file) = path.split_once('/').unwrap();
+            let (tag, file) = release.split_once('/').unwrap();
             assert!(tag.starts_with(installer.board), "{tag}");
             assert_eq!(file, format!("{tag}.img.xz"));
         }
