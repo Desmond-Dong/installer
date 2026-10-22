@@ -7,10 +7,7 @@ import {
 import { customElement, state } from "lit/decorators.js";
 import { wizardState } from "../../state/wizard-state.js";
 import { openExternalUrl } from "../../utils/external-url.js";
-import {
-  findInstaller,
-  installerConfig,
-} from "../ha-hardware/hardware.js";
+import { findInstaller, installerConfig } from "../ha-hardware/hardware.js";
 import "../../components/info-dialog.js";
 import "../../components/option-card.js";
 
