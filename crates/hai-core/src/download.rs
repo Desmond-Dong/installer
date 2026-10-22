@@ -562,6 +562,7 @@ async fn fetch_release_from_mirror(base_url: &str, version: &str) -> Result<Haos
 
 async fn fetch_cached_release(
     cache: &Mutex<HashMap<String, HaosRelease>>,
+    api_base_url: &str,
     version: &str,
 ) -> Result<HaosRelease> {
     // Serialize misses so concurrent installations do not spend multiple requests.
@@ -569,14 +570,14 @@ async fn fetch_cached_release(
     if let Some(release) = cache.get(version) {
         return Ok(release.clone());
     }
-    let release = fetch_release_from_mirror(OTA_MIRROR, version).await?;
+    let release = fetch_release_from_mirror(api_base_url, version).await?;
     cache.insert(version.to_string(), release.clone());
     Ok(release)
 }
 
 /// Fetch a specific HAOS release by version
 async fn fetch_release(version: &str) -> Result<HaosRelease> {
-    fetch_cached_release(&RELEASE_CACHE, version).await
+    fetch_cached_release(&RELEASE_CACHE, OTA_MIRROR, version).await
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -2337,7 +2338,9 @@ mod tests {
             .expect(1)
             .create_async()
             .await;
-        assert!(fetch_cached_release(&cache, "18.3").await.is_err());
+        assert!(fetch_cached_release(&cache, &server.url(), "18.3")
+            .await
+            .is_err());
         failed.assert_async().await;
         failed.remove_async().await;
         for version in ["18.3", "18.4"] {
@@ -2352,9 +2355,10 @@ mod tests {
                 .expect(1)
                 .create_async()
                 .await;
+            let url = server.url();
             let (first, second) = tokio::join!(
-                fetch_cached_release(&cache, version),
-                fetch_cached_release(&cache, version)
+                fetch_cached_release(&cache, &url, version),
+                fetch_cached_release(&cache, &url, version)
             );
             for release in [first.unwrap(), second.unwrap()] {
                 assert_eq!(release.version, version);
