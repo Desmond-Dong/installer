@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, China]
   pull_request:
     branches: [main]
   # Running the workflow by hand on main releases the next version on the
