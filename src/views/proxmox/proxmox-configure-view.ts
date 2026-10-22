@@ -661,6 +661,11 @@ export class ProxmoxConfigureView extends LitElement {
     wizardState.goToStep(0);
   }
 
+  /** Choices are judged only against a lookup that finished without error. */
+  private get _loaded(): boolean {
+    return !this._loadingNodes && !this._loadingStorage && !this._error;
+  }
+
   private get _parsedVlanTag(): number | undefined {
     return parseWholeNumber(this._vlanTag, 1, 4094);
   }
@@ -673,9 +678,7 @@ export class ProxmoxConfigureView extends LitElement {
       );
     }
     if (
-      !this._loadingNodes &&
-      !this._loadingStorage &&
-      !this._error &&
+      this._loaded &&
       !this._bridges.find((bridge) => bridge.name === this._selectedBridge)
         ?.vlan_aware
     ) {
@@ -704,26 +707,16 @@ export class ProxmoxConfigureView extends LitElement {
     wizardState.setSelection("proxmoxVlanTag", this._parsedVlanTag);
     wizardState.setSelection(
       "proxmoxBridgeReady",
-      !this._loadingNodes &&
-        !this._loadingStorage &&
-        !this._error &&
+      this._loaded &&
         this._bridges.some((bridge) => bridge.name === this._selectedBridge)
     );
     wizardState.setSelection(
       "proxmoxConfigureReady",
-      !this._loadingNodes &&
-        !this._loadingStorage &&
-        !this._error &&
-        !this._vlanError &&
-        !this._nameError &&
-        !this._vmIdError
+      this._loaded && !this._vlanError && !this._nameError && !this._vmIdError
     );
     wizardState.setSelection(
       "proxmoxImportReady",
-      !this._loadingNodes &&
-        !this._loadingStorage &&
-        !this._error &&
-        this._importReady
+      this._loaded && this._importReady
     );
     // A failed initial lookup must not turn the fallback ID into a choice
     // that suppresses the next-free-ID suggestion after reconnecting.
@@ -865,14 +858,7 @@ export class ProxmoxConfigureView extends LitElement {
   }
 
   private _renderImport() {
-    if (
-      !this._selectedNode ||
-      this._loadingNodes ||
-      this._loadingStorage ||
-      this._importReady ||
-      this._error
-    )
-      return "";
+    if (!this._selectedNode || !this._loaded || this._importReady) return "";
 
     const candidates = this._importCandidates;
     const selected = candidates.find((s) => s.name === this._importStorage);
