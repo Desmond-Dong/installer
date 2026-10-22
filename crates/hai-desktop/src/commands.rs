@@ -271,10 +271,11 @@ where
         message: "Fetching release info...".to_string(),
     });
 
-    let image = match hai_core::hardware_installer::find(&request.board) {
-        // Installer images are pinned, size and digest included, so there is
-        // no release to look up. Everything below treats them like HAOS.
-        Some(installer) => installer.image(),
+    // Pinned installers (including the China mirror's x86 installer ISO)
+    // carry their image, size and digest; everything below treats them like
+    // HAOS images.
+    let (installer, image) = match hai_core::hardware_installer::find(&request.board) {
+        Some(installer) => (Some(installer), installer.image()),
         None => {
             // Fetch the release this board is on
             let release = backend
@@ -285,14 +286,15 @@ where
             // Find the raw disk image for the requested board. Some boards also
             // ship a qcow2 under the same board name, which must never be
             // written to a drive.
-            release
+            let image = release
                 .image_for(&request.board, ImageFormat::Raw)
                 .cloned()
                 .ok_or_else(|| {
                     hai_core::Error::InvalidConfig(
                         "No compatible image was found for this device.".into(),
                     )
-                })?
+                })?;
+            (None, image)
         }
     };
 
@@ -319,10 +321,15 @@ where
     let extracted_path = temporary_image.path();
 
     check_cancelled(callback)?;
-    backend
-        .extract_temporary_image(&temporary_image, callback)
-        .await
-        .map_err(CommandError::from)?;
+    if installer.is_some_and(|installer| installer.uncompressed) {
+        // The installer ISO is already the image to write: nothing to unpack.
+        std::fs::rename(&compressed_path, &extracted_path).map_err(CommandError::from)?;
+    } else {
+        backend
+            .extract_temporary_image(&temporary_image, callback)
+            .await
+            .map_err(CommandError::from)?;
+    }
 
     let mut image = Image::new(&extracted_path);
     if let Some(wifi) = request.wifi.clone() {
@@ -2484,7 +2491,7 @@ mod mock_tests {
             let image = backend.downloaded.lock().unwrap().take().unwrap();
             assert_eq!(image.download_url, installer.download_url);
             assert_eq!(image.size, installer.size);
-            assert_eq!(image.digest.as_deref(), Some(installer.digest));
+            assert_eq!(image.digest.as_deref(), installer.digest);
             assert_eq!(image.format, ImageFormat::Raw);
         }
     }

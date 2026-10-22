@@ -163,6 +163,23 @@ test.describe("Mini PC Flow - Setup Method Selection", () => {
       page.locator("minipc-architecture-selection-view")
     ).toBeVisible();
   });
+
+  test("clicking the USB installer option skips architecture and picks drives", async ({
+    page,
+  }) => {
+    await page.locator('option-card[heading="Generic (mini) PC"]').click();
+
+    const setupView = page.locator("minipc-setup-method-view");
+    const usbInstallerOption = setupView
+      .locator("option-card, wa-radio")
+      .filter({ hasText: "Install from a USB stick" });
+    await expect(usbInstallerOption).toBeVisible();
+    await usbInstallerOption.click();
+
+    // The installer ISO targets Intel/AMD machines only, so there is no
+    // architecture step; the next choice is which USB stick to write.
+    await expect(page.locator("drive-selection-view")).toBeVisible();
+  });
 });
 
 test.describe("Mini PC Flow - Architecture Selection", () => {

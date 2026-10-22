@@ -7,6 +7,10 @@ import {
 import { customElement, state } from "lit/decorators.js";
 import { wizardState } from "../../state/wizard-state.js";
 import { openExternalUrl } from "../../utils/external-url.js";
+import {
+  findInstaller,
+  installerConfig,
+} from "../ha-hardware/hardware.js";
 import "../../components/info-dialog.js";
 import "../../components/option-card.js";
 
@@ -66,6 +70,16 @@ export class MiniPCSetupMethodView extends LitElement {
       <div class="options">
         <option-card
           horizontal
+          heading=${localize("views.minipc.setup_method_view.usb_installer")}
+          description=${localize(
+            "views.minipc.setup_method_view.burn_the_bootable_installer_onto_a_usb_stick_and_boot_it_on_your_intel_amd"
+          )}
+          icon="usb-boot"
+          @click=${this._onUsbInstallerBoot}
+          ><span slot="end" aria-hidden="true">→</span></option-card
+        >
+        <option-card
+          horizontal
           heading=${localize(
             "views.minipc.setup_method_view.i_can_connect_the_drive"
           )}
@@ -108,6 +122,25 @@ export class MiniPCSetupMethodView extends LitElement {
 
   private _onConnectDrive() {
     wizardState.nextStep();
+  }
+
+  /**
+   * Start the bootable x86-64 installer: skip the architecture step (the ISO
+   * targets Intel/AMD machines) and go straight to picking the USB stick.
+   */
+  private _onUsbInstallerBoot() {
+    const installer = findInstaller("x86-installer")!;
+    wizardState.setSelection("device", installer.board);
+    wizardState.setSelection(
+      "deviceName",
+      localize("views.minipc.setup_method_view.intel_amd_mini_pc")
+    );
+    wizardState.setSelection("deviceConfig", installerConfig(installer));
+    const steps = wizardState.getState().steps;
+    const driveStep = steps.findIndex((step) => step.id === "drive");
+    if (driveStep >= 0) {
+      wizardState.goToStep(driveStep);
+    }
   }
 
   private _onUsbBoot() {

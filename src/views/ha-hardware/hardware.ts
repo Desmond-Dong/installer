@@ -6,7 +6,7 @@ export type HaHardwareId = "green" | "yellow-cm4" | "yellow-cm5" | "blue";
 
 export interface HaHardwareInstaller {
   /** Board the backend resolves to its pinned installer image. */
-  board: "green-installer" | "yellow-installer";
+  board: "green-installer" | "yellow-installer" | "x86-installer";
   /** Release date of the pinned image, shown as its version. */
   released: Date;
 }
@@ -36,6 +36,15 @@ const GREEN_INSTALLER: HaHardwareInstaller = {
 const YELLOW_INSTALLER: HaHardwareInstaller = {
   board: "yellow-installer",
   released: new Date(2023, 9, 25),
+};
+
+// The China mirror's bootable HAOS installer ISO for generic x86-64
+// machines: written to a USB stick, it installs Home Assistant OS onto the
+// machine's own storage. Keep the release date in sync with the pinned
+// image in hai-core's hardware_installer.rs.
+const X86_INSTALLER: HaHardwareInstaller = {
+  board: "x86-installer",
+  released: new Date(2026, 9, 5),
 };
 
 /** The installers only have to fit on the drive; see hardware_installer.rs. */
@@ -101,18 +110,25 @@ export function installerConfig(installer: HaHardwareInstaller): HaosConfig {
 export function findInstaller(
   board: string | undefined
 ): HaHardwareInstaller | undefined {
-  return [GREEN_INSTALLER, YELLOW_INSTALLER].find(
+  return [GREEN_INSTALLER, YELLOW_INSTALLER, X86_INSTALLER].find(
     (installer) => installer.board === board
   );
 }
 
 /** Installer name with its release date, standing in for a HAOS version. */
 export function installerName(installer: HaHardwareInstaller): string {
-  return installer.board === "green-installer"
-    ? localize("views.ha_hardware.hardware.green_installer", {
-        released: installer.released,
-      })
-    : localize("views.ha_hardware.hardware.yellow_installer", {
+  switch (installer.board) {
+    case "green-installer":
+      return localize("views.ha_hardware.hardware.green_installer", {
         released: installer.released,
       });
+    case "yellow-installer":
+      return localize("views.ha_hardware.hardware.yellow_installer", {
+        released: installer.released,
+      });
+    case "x86-installer":
+      return localize("views.ha_hardware.hardware.x86_installer", {
+        released: installer.released,
+      });
+  }
 }
