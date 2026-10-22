@@ -92,7 +92,9 @@ jobs:
           tool: cargo-audit@0.22.2
 
       - name: Audit Rust dependencies
-        run: cargo audit
+        # proc-macro-error is unmaintained with no fix; it arrives through the
+        # gtk3/glib macro stack Tauri needs on Linux.
+        run: cargo audit --ignore RUSTSEC-2021-0139
 
   # Picks the version of a release run from the existing version tags, once,
   # so all build jobs use the same one even if the month changes meanwhile.
