@@ -6,8 +6,8 @@ import { installerError } from "../utils/installer-error.js";
 import { pageHeaderStyles, renderBackHeader } from "../utils/page-header.js";
 import { ViewAccessibility } from "../utils/view-accessibility.js";
 import "@home-assistant/webawesome/dist/components/button/button.js";
-import "@home-assistant/webawesome/dist/components/spinner/spinner.js";
 import "../components/casita-mascot.js";
+import "../components/loading-spinner.js";
 
 @customElement("connection-check-view")
 export class ConnectionCheckView extends LitElement {
@@ -97,11 +97,11 @@ export class ConnectionCheckView extends LitElement {
       ${renderBackHeader(this._back)}
       <div class="content">
         ${this._checking
-          ? html`<wa-spinner
+          ? html`<loading-spinner
               aria-label=${localize(
                 "views.connection_check_view.checking_connection"
               )}
-            ></wa-spinner>`
+            ></loading-spinner>`
           : html`<casita-mascot mood="sad"></casita-mascot>`}
         <h1>
           ${this._checking
