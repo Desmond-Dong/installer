@@ -77,6 +77,44 @@ impl FlashProgress {
     }
 }
 
+/// Assert that `updates` go through `stages` in order, the way the progress
+/// views expect from any backend: stages that move bytes count them from 0 to
+/// 100%, the others report once at 0%.
+#[cfg(test)]
+pub(crate) fn assert_progress_shape(updates: &[FlashProgress], stages: &[FlashStage]) {
+    let runs: Vec<_> = updates.chunk_by(|a, b| a.stage == b.stage).collect();
+    let seen: Vec<_> = runs.iter().map(|run| run[0].stage.clone()).collect();
+    assert_eq!(seen, stages);
+    for run in runs {
+        let (first, last) = (&run[0], &run[run.len() - 1]);
+        match first.stage {
+            FlashStage::Complete => assert!(run.iter().all(|u| u.progress == 100), "{run:?}"),
+            FlashStage::Finalizing | FlashStage::CreatingVm | FlashStage::StartingVm => {
+                assert_eq!(run.len(), 1, "{run:?}");
+                assert_eq!(
+                    (first.progress, first.bytes_processed, first.total_bytes),
+                    (0, 0, 0)
+                );
+            }
+            _ => {
+                assert!(
+                    run.windows(2)
+                        .all(|pair| pair[0].progress <= pair[1].progress
+                            && pair[0].bytes_processed <= pair[1].bytes_processed),
+                    "{run:?}"
+                );
+                assert_eq!(first.progress, 0, "{run:?}");
+                assert_ne!(last.total_bytes, 0, "{run:?}");
+                assert_eq!(
+                    (last.progress, last.bytes_processed),
+                    (100, last.total_bytes)
+                );
+                assert!(run.iter().all(|u| u.bytes_processed <= u.total_bytes));
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(test, derive(ts_rs::TS))]
@@ -169,6 +207,27 @@ pub struct FlashRequest {
     pub verify: bool,
     /// What the device at `device_id` looked like when the user selected it
     pub expected_device: ExpectedDevice,
+    /// Network for Home Assistant OS to join on first boot
+    #[serde(default)]
+    #[cfg_attr(test, ts(optional = nullable))]
+    pub wifi: Option<WifiConfig>,
+}
+
+/// A WPA2 network, written to the drive and never stored by the installer.
+#[derive(Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct WifiConfig {
+    pub ssid: String,
+    pub password: String,
+}
+
+// The password must not end up in a log through `{:?}`
+impl std::fmt::Debug for WifiConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WifiConfig")
+            .field("ssid", &self.ssid)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Identity of the selected drive, re-checked right before writing.
@@ -329,10 +388,8 @@ pub struct ProxmoxNode {
     pub status: String,
     /// CPU usage percentage
     pub cpu_usage: Option<f64>,
-    /// Memory usage in bytes
-    pub memory_used: Option<u64>,
-    /// Total memory in bytes
-    pub memory_total: Option<u64>,
+    /// Logical CPUs; Proxmox won't start a VM with more cores than this
+    pub cpu_count: Option<u32>,
 }
 
 /// Proxmox storage information
@@ -347,8 +404,6 @@ pub struct ProxmoxStorage {
     pub content: Vec<String>,
     /// Available space in bytes
     pub available: u64,
-    /// Total space in bytes
-    pub total: u64,
     /// Whether storage is active
     pub active: bool,
 }
@@ -389,8 +444,6 @@ pub struct ProxmoxVmConfig {
     pub memory_mb: u32,
     /// Disk size in GB
     pub disk_size_gb: u32,
-    /// Whether to start VM after creation
-    pub auto_start: bool,
 }
 
 /// Proxmox VM creation result
@@ -471,6 +524,37 @@ pub struct VmStatusInfo {
     pub status: String,
     /// The VM's IP address, if known.
     pub ip_address: Option<String>,
+}
+
+/// What Supervisor reports, through the Home Assistant OS landing page, while
+/// it installs Home Assistant Core
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub struct HaSetupStatus {
+    /// Progress (0-100) of the Core download, while Supervisor runs it.
+    pub core_install_progress: Option<f64>,
+    /// Progress (0-100) of Supervisor updating itself, which on a first boot
+    /// usually comes before the Core download.
+    pub supervisor_update_progress: Option<f64>,
+    /// Problems that can hold up the install, most fundamental first.
+    pub problems: Vec<HaSetupProblem>,
+}
+
+/// A problem Supervisor reports that can keep Home Assistant Core from installing
+///
+/// Declared most fundamental first: without internet, every download fails.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(test, derive(ts_rs::TS))]
+pub enum HaSetupProblem {
+    /// The host or Supervisor cannot reach the internet.
+    NoInternet,
+    /// The data disk is (almost) full.
+    FreeSpace,
+    /// The container registry limits the pulls.
+    DockerRatelimit,
+    /// Downloading an update of Supervisor or Core failed.
+    UpdateFailed,
 }
 
 #[cfg(test)]
@@ -704,6 +788,30 @@ mod tests {
         assert_eq!(device.vendor, deserialized.vendor);
     }
 
+    #[test]
+    fn progress_shape_accepts_a_flash_ending_in_two_completes() {
+        // The writer's `complete` carries the image size, `run_flash`'s none
+        let size = 4096;
+        let updates = [
+            FlashProgress::new(FlashStage::Writing, 0, size, "Writing"),
+            FlashProgress::new(FlashStage::Writing, size, size, "Written"),
+            FlashProgress::new(FlashStage::Finalizing, 0, 0, "Ejecting"),
+            FlashProgress::new(FlashStage::Complete, size, size, "Complete"),
+            FlashProgress {
+                progress: 100,
+                ..FlashProgress::new(FlashStage::Complete, 0, 0, "Installation complete!")
+            },
+        ];
+        assert_progress_shape(
+            &updates,
+            &[
+                FlashStage::Writing,
+                FlashStage::Finalizing,
+                FlashStage::Complete,
+            ],
+        );
+    }
+
     // FlashProgress struct tests
     #[test]
     fn test_flash_progress_json_roundtrip() {
@@ -814,6 +922,7 @@ mod tests {
             board: "rpi5-64".to_string(),
             verify: true,
             expected_device: ExpectedDevice::default(),
+            wifi: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -831,6 +940,7 @@ mod tests {
             board: "green".to_string(),
             verify: false,
             expected_device: ExpectedDevice::default(),
+            wifi: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -1032,7 +1142,6 @@ mod tests {
             cpu_cores: 4,
             memory_mb: 4096,
             disk_size_gb: 32,
-            auto_start: true,
         };
         let json = serde_json::to_string(&config).unwrap();
         let parsed: ProxmoxVmConfig = serde_json::from_str(&json).unwrap();
@@ -1040,7 +1149,6 @@ mod tests {
         assert_eq!(parsed.memory_mb, 4096);
         assert_eq!(parsed.cpu_cores, 4);
         assert_eq!(parsed.disk_size_gb, 32);
-        assert!(parsed.auto_start);
     }
 
     #[test]

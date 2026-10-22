@@ -27,6 +27,7 @@ rustls-platform-verifier = { workspace = true }
 liblzma = { workspace = true }
 directories = { workspace = true }
 fs2 = { workspace = true }
+fatfs = { workspace = true }
 urlencoding = { workspace = true }
 tempfile = { workspace = true }
 
@@ -50,7 +51,7 @@ windows-sys = { workspace = true }
 [dev-dependencies]
 ts-rs = { workspace = true }
 plist = { workspace = true }
-tokio = { workspace = true, features = ["net"] }
+tokio = { workspace = true, features = ["net", "test-util"] }
 tempfile = { workspace = true }
 serial_test = { workspace = true }
 mockito = { workspace = true }

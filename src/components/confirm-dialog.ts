@@ -73,17 +73,10 @@ export class ConfirmDialog extends LitElement {
       gap: 0.375rem 1rem;
       padding: 0.75rem 1rem;
       margin: 0 0 1rem 0;
-      background-color: var(--ha-background-color, #f5f5f5);
+      background-color: var(--ha-card-background, #ffffff);
       border: 1px solid var(--ha-border-color, #e0e0e0);
       border-radius: 8px;
       font-size: 0.875rem;
-    }
-
-    @media (prefers-color-scheme: dark) {
-      .drive-details {
-        background-color: var(--ha-card-background, #1e1e1e);
-        border-color: var(--ha-border-color, #333333);
-      }
     }
 
     .detail-label {
@@ -113,18 +106,18 @@ export class ConfirmDialog extends LitElement {
   @property({ type: Boolean, reflect: true })
   open = false;
 
-  @property({ type: String })
+  @property({ type: String, attribute: "drive-name" })
   driveName = "";
 
   /** Device id/path handed to the backend, e.g. "/dev/sda" or "disk2". */
-  @property({ type: String })
+  @property({ type: String, attribute: "drive-path" })
   drivePath = "";
 
-  @property({ type: String })
+  @property({ type: String, attribute: "drive-model" })
   driveModel = "";
 
   /** Size in bytes; undefined when unknown. */
-  @property({ type: Number })
+  @property({ type: Number, attribute: "drive-size" })
   driveSize?: number;
 
   render() {

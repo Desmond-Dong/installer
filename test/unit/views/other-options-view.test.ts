@@ -14,9 +14,13 @@ const OPTIONS = [
   [
     "Synology NAS",
     "synology",
-    "https://www.home-assistant.io/installation/synology",
+    "https://www.home-assistant.io/installation/alternative#synology-nas",
   ],
-  ["QNAP NAS", "qnap", "https://www.home-assistant.io/installation/qnap"],
+  [
+    "QNAP NAS",
+    "qnap",
+    "https://www.home-assistant.io/installation/alternative#qnap-nas",
+  ],
   [
     "Linux virtual machine",
     "linux",
@@ -62,7 +66,7 @@ describe("other-options-view", () => {
       html`<other-options-view></other-options-view>`
     );
     const shown = cards(el);
-    expect(shown.map((card) => card.title)).to.deep.equal(
+    expect(shown.map((card) => card.heading)).to.deep.equal(
       OPTIONS.map(([title]) => title)
     );
     expect(shown.map((card) => card.icon)).to.deep.equal(
@@ -80,7 +84,7 @@ describe("other-options-view", () => {
         html`<other-options-view></other-options-view>`
       );
       cards(el)
-        .find((card) => card.title === title)!
+        .find((card) => card.heading === title)!
         .click();
       await settle();
       expect(opened).to.deep.equal([url]);

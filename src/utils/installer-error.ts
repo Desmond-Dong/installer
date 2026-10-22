@@ -24,6 +24,10 @@ const messages: Record<string, () => string> = {
   proxmox_api: () => localize("utils.installer_error.proxmox_api"),
   proxmox_certificate_changed: () =>
     localize("utils.installer_error.proxmox_certificate_changed"),
+  proxmox_session_expired: () =>
+    localize("utils.installer_error.proxmox_session_expired"),
+  // The backend's text names internals such as file names or parse errors
+  invalid_config: () => localize("utils.installer_error.invalid_config"),
   drive_disconnected: () =>
     localize("utils.installer_error.drive_disconnected"),
   write_protected: () => localize("utils.installer_error.write_protected"),
@@ -62,11 +66,13 @@ export function installerError(
       !Array.isArray(error.details)
         ? (error.details as Record<string, unknown>)
         : {};
+    const byCode = Object.prototype.hasOwnProperty.call(messages, error.code)
+      ? messages[error.code]
+      : undefined;
     let message =
       localizeBackend(details.message_key, details.message_params) ??
-      (Object.prototype.hasOwnProperty.call(messages, error.code)
-        ? messages[error.code]()
-        : error.message || fallback);
+      byCode?.() ??
+      (error.message || fallback);
     if (
       error.code === "image_too_large" &&
       typeof details.image_size === "number" &&
@@ -109,7 +115,7 @@ export function renderErrorHelp() {
   // Reporting goes through the diagnostics dialog, which shows exactly what
   // a public issue would contain before anything leaves the installer
   return html`<p class="error-help">
-    <a href=${help} @click=${(event: Event) => openExternalLink(event, help)}
+    <a href=${help} @click=${openExternalLink}
       >${localize("common.installation_help")}</a
     >
     <span aria-hidden="true"> · </span>

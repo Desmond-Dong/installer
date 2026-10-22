@@ -29,196 +29,137 @@ import "@home-assistant/webawesome/dist/components/button/button.js";
 import "@home-assistant/webawesome/dist/components/radio-group/radio-group.js";
 import "../../components/drive-card.js";
 import "../../components/casita-mascot.js";
+import "../../components/inline-notice.js";
 import "../ha-hardware/connect-instructions.js";
 
 @customElement("drive-selection-view")
 export class DriveSelectionView extends LitElement {
   protected readonly _accessibility = new ViewAccessibility(this);
-  static styles = css`
-    ${reducedMotionStyles}
-    :host {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      min-height: 100%;
-    }
-
-    h2 {
-      font-size: 1.5rem;
-      font-weight: 400;
-      color: var(--ha-text-color, #212121);
-      margin: 0 0 0.5rem 0;
-      text-align: center;
-    }
-
-    .subtitle {
-      font-size: 1rem;
-      color: var(--ha-secondary-text-color, #727272);
-      margin: 0 0 1.5rem 0;
-      text-align: center;
-    }
-
-    .warning {
-      display: flex;
-      align-items: flex-start;
-      gap: 0.75rem;
-      padding: 1rem;
-      background-color: rgba(255, 152, 0, 0.1);
-      border: 1px solid rgba(255, 152, 0, 0.3);
-      border-radius: 8px;
-      margin-bottom: 1.5rem;
-      max-width: 500px;
-      width: 100%;
-      box-sizing: border-box;
-    }
-
-    .warning-icon {
-      font-size: 1.25rem;
-      flex-shrink: 0;
-    }
-
-    .warning-text {
-      font-size: 0.875rem;
-      color: var(--ha-text-color, #212121);
-      margin: 0;
-      line-height: 1.5;
-    }
-
-    @media (prefers-color-scheme: dark) {
-      .warning {
-        background-color: rgba(255, 152, 0, 0.15);
-        border-color: rgba(255, 152, 0, 0.4);
+  static styles = [
+    reducedMotionStyles,
+    css`
+      :host {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        min-height: 100%;
       }
-    }
 
-    .notice {
-      display: flex;
-      align-items: flex-start;
-      gap: 0.75rem;
-      padding: 1rem;
-      background-color: rgba(219, 68, 55, 0.1);
-      border: 1px solid rgba(219, 68, 55, 0.3);
-      border-radius: 8px;
-      margin-bottom: 1.5rem;
-      max-width: 500px;
-      width: 100%;
-      box-sizing: border-box;
-    }
-
-    .notice-icon {
-      font-size: 1.25rem;
-      flex-shrink: 0;
-    }
-
-    .notice-text {
-      font-size: 0.875rem;
-      color: var(--ha-text-color, #212121);
-      margin: 0;
-      line-height: 1.5;
-    }
-
-    @media (prefers-color-scheme: dark) {
-      .notice {
-        background-color: rgba(219, 68, 55, 0.15);
-        border-color: rgba(219, 68, 55, 0.4);
+      h2 {
+        font-size: 1.5rem;
+        font-weight: 400;
+        color: var(--ha-text-color, #212121);
+        margin: 0 0 0.5rem 0;
+        text-align: center;
       }
-    }
 
-    .drives-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      width: 100%;
-      max-width: 500px;
-      margin-bottom: 1rem;
-    }
-
-    .drives-title {
-      font-size: 0.875rem;
-      font-weight: 500;
-      color: var(--ha-secondary-text-color, #727272);
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      margin: 0;
-    }
-
-    .drives-list {
-      width: 100%;
-      max-width: 500px;
-    }
-
-    .drives-list::part(form-control-input) {
-      gap: 0.75rem;
-    }
-
-    .loading {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: 3rem;
-      color: var(--ha-secondary-text-color, #727272);
-    }
-
-    .loading-spinner {
-      width: 40px;
-      height: 40px;
-      border: 3px solid var(--ha-border-color, #e0e0e0);
-      border-top-color: var(--ha-primary-color, #03a9f4);
-      border-radius: 50%;
-      animation: spin 1s linear infinite;
-      margin-bottom: 1rem;
-    }
-
-    @keyframes spin {
-      to {
-        transform: rotate(360deg);
+      .subtitle {
+        font-size: 1rem;
+        color: var(--ha-secondary-text-color, #727272);
+        margin: 0 0 1.5rem 0;
+        text-align: center;
       }
-    }
 
-    .error {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding: 2rem;
-      text-align: center;
-    }
+      inline-notice {
+        margin-bottom: 1.5rem;
+      }
 
-    .error-icon {
-      font-size: 3rem;
-      margin-bottom: 1rem;
-    }
+      .drives-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        width: 100%;
+        max-width: 500px;
+        margin-bottom: 1rem;
+      }
 
-    .error-message {
-      color: var(--ha-error-color, #db4437);
-      margin-bottom: 1rem;
-    }
+      .drives-title {
+        font-size: 0.875rem;
+        font-weight: 500;
+        color: var(--ha-secondary-text-color, #727272);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin: 0;
+      }
 
-    .empty-state {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding: 2rem;
-      text-align: center;
-      color: var(--ha-secondary-text-color, #727272);
-    }
+      .drives-list {
+        width: 100%;
+        max-width: 500px;
+      }
 
-    casita-mascot {
-      margin-bottom: 1rem;
-    }
+      .drives-list::part(form-control-input) {
+        gap: 0.75rem;
+      }
 
-    .empty-title {
-      font-size: 1.125rem;
-      font-weight: 500;
-      color: var(--ha-text-color, #212121);
-      margin: 0 0 0.5rem 0;
-    }
+      .loading {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 3rem;
+        color: var(--ha-secondary-text-color, #727272);
+      }
 
-    .empty-text {
-      font-size: 0.875rem;
-      margin: 0;
-    }
-  `;
+      .loading-spinner {
+        width: 40px;
+        height: 40px;
+        border: 3px solid var(--ha-border-color, #e0e0e0);
+        border-top-color: var(--ha-primary-color, #03a9f4);
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        margin-bottom: 1rem;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      .error {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 2rem;
+        text-align: center;
+      }
+
+      .error-icon {
+        font-size: 3rem;
+        margin-bottom: 1rem;
+      }
+
+      .error-message {
+        color: var(--ha-error-color, #db4437);
+        margin-bottom: 1rem;
+      }
+
+      .empty-state {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 2rem;
+        text-align: center;
+        color: var(--ha-secondary-text-color, #727272);
+      }
+
+      casita-mascot {
+        margin-bottom: 1rem;
+      }
+
+      .empty-title {
+        font-size: 1.125rem;
+        font-weight: 500;
+        color: var(--ha-text-color, #212121);
+        margin: 0 0 0.5rem 0;
+      }
+
+      .empty-text {
+        font-size: 0.875rem;
+        margin: 0;
+      }
+    `,
+  ];
 
   @state()
   private _drives: BlockDevice[] = [];
@@ -344,9 +285,8 @@ export class DriveSelectionView extends LitElement {
           ></ha-hardware-connect-instructions>`
         : ""}
 
-      <div class="warning">
-        <span class="warning-icon">⚠️</span>
-        <p class="warning-text">
+      <inline-notice>
+        <p>
           ${localizeContent(
             "views.sbc.drive_selection_view.value_all_data_on_the_selected_drive_will_be_permanently_erased_make_sure_y",
             {
@@ -356,7 +296,7 @@ export class DriveSelectionView extends LitElement {
             }
           )}
         </p>
-      </div>
+      </inline-notice>
 
       <!-- The live region stays in the DOM so that inserting the notice into
            it is announced; a region added together with its content often
@@ -364,14 +304,13 @@ export class DriveSelectionView extends LitElement {
       <div class="notice-region" role="status">
         ${this._selectionLost
           ? html`
-              <div class="notice">
-                <span class="notice-icon" aria-hidden="true">🔌</span>
-                <p class="notice-text">
+              <inline-notice variant="error" icon="🔌">
+                <p>
                   ${localize(
                     "views.sbc.drive_selection_view.the_drive_you_selected_is_no_longer_available_so_the_selection_was_cleared_"
                   )}
                 </p>
-              </div>
+              </inline-notice>
             `
           : ""}
       </div>

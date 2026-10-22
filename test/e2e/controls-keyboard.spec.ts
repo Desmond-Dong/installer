@@ -60,6 +60,8 @@ test("Mini PC choices work with Tab, Space, and arrow keys", async ({
   await expect(page.locator("drive-selection-view")).toBeVisible();
   await activate(page, page.getByRole("radio").first(), "Space");
   await next(page);
+  await expect(page.locator("wifi-view")).toBeVisible();
+  await next(page);
   await activate(
     page,
     page.getByRole("button", { name: "Install", exact: true })
@@ -83,6 +85,8 @@ test("the existing board flow remains keyboard accessible", async ({
   await next(page);
   await activate(page, page.getByRole("radio").first(), "Space");
   await next(page);
+  await expect(page.locator("wifi-view")).toBeVisible();
+  await next(page);
   await activate(
     page,
     page.getByRole("button", { name: "Install", exact: true })
@@ -105,7 +109,13 @@ test("every external installation guide can be opened with the keyboard", async 
   });
   await start(page, "Others");
   const guides = page.locator("other-options-view option-card");
-  const urls = ["linux#docker-compose", "synology", "qnap", "linux", "windows"];
+  const urls = [
+    "linux#docker-compose",
+    "alternative#synology-nas",
+    "alternative#qnap-nas",
+    "linux",
+    "windows",
+  ];
   await expect(guides).toHaveCount(urls.length);
   for (let index = 0; index < urls.length; index++) {
     await activate(page, guides.nth(index), index % 2 ? "Space" : "Enter");

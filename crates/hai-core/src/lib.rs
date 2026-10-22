@@ -16,6 +16,7 @@
 pub mod disk;
 pub mod download;
 pub mod error;
+pub mod haos_config;
 pub mod hardware_installer;
 pub mod host;
 pub mod keep_awake;
@@ -124,7 +125,7 @@ pub trait DeviceBackend {
     /// caller validation of removability.
     async fn write_image<P: ProgressCallback>(
         &self,
-        image_path: &Path,
+        image: &disk::Image,
         device_id: &str,
         expected: &ExpectedDevice,
         verify: bool,
@@ -219,6 +220,10 @@ pub trait UtmBackend {
     /// Check whether UTM is installed and report its status.
     async fn check_utm_status(&self) -> Result<UtmStatus>;
 
+    /// Whether macOS lets the installer control UTM. Asking for the first
+    /// time shows the Automation prompt, and opens UTM.
+    fn check_automation(&self) -> Result<()>;
+
     /// Create a Home Assistant VM in UTM, reporting progress.
     async fn create_vm<P: ProgressCallback>(
         &self,
@@ -243,6 +248,10 @@ pub trait HostBackend {
 
     /// Whether Home Assistant has finished starting up at `ip`.
     async fn check_ha_updated(&self, ip: &str) -> bool;
+
+    /// What Supervisor reports while it installs Core at `ip`, or `None`
+    /// without a full answer from a landing page there.
+    async fn ha_setup_status(&self, ip: &str) -> Option<HaSetupStatus>;
 }
 
 /// hai-core's production backend.

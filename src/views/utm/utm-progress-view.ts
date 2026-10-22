@@ -17,8 +17,6 @@ import {
   createUtmVm,
   startUtmVm,
   getUtmVmStatus,
-  checkHaReady,
-  checkHaUpdated,
   type VmStatusInfo,
 } from "../../api/commands.js";
 import type { FlashProgress, UtmVmConfig } from "../../api/types.js";
@@ -28,12 +26,18 @@ import {
   DEFAULT_MEMORY_MB,
   DEFAULT_UTM_VM_NAME,
 } from "../../state/vm-defaults.js";
+import { isCancelled, throwIfCancelled } from "../../utils/polling.js";
 import {
-  PollTimeoutError,
-  isCancelled,
-  pollUntil,
-  throwIfCancelled,
-} from "../../utils/polling.js";
+  checkedAddress,
+  isWaitStage,
+  waitError,
+  waitForHomeAssistant,
+  type WaitStage,
+} from "../../utils/vm-wait.js";
+import {
+  haSetupProblemMessage,
+  type HaSetupProgress,
+} from "../../utils/ha-setup.js";
 import "../../components/install-progress.js";
 
 type InstallStage =
@@ -41,9 +45,7 @@ type InstallStage =
   | "extracting"
   | "creating"
   | "starting"
-  | "waiting"
-  | "ready"
-  | "updating"
+  | WaitStage
   | "complete"
   | "error";
 
@@ -85,18 +87,6 @@ const INDETERMINATE_STAGES: InstallStage[] = [
   "updating",
 ];
 
-/** Delay between polls while waiting for the VM and Home Assistant */
-const POLL_INTERVAL_MS = 2000;
-
-/** How long to wait for the VM to report an IP address */
-const VM_IP_TIMEOUT_MS = 5 * 60 * 1000;
-
-/** How long to wait for the Home Assistant webserver to answer */
-const HA_READY_TIMEOUT_MS = 5 * 60 * 1000;
-
-/** How long to wait for Home Assistant to finish updating itself */
-const HA_UPDATED_TIMEOUT_MS = 60 * 60 * 1000;
-
 /** VM statuses that mean the VM does not need to be started again */
 const RUNNING_VM_STATUSES = ["started", "running", "starting", "resuming"];
 
@@ -132,6 +122,10 @@ export class UtmProgressView extends LitElement {
   @state()
   private _error: InstallerError | null = null;
 
+  /** What Supervisor reports while it installs Home Assistant */
+  @state()
+  private _setup: HaSetupProgress = { progress: null, problem: null };
+
   @state()
   private _isInstalling = false;
 
@@ -148,6 +142,9 @@ export class UtmProgressView extends LitElement {
   /** What the shell last heard about `stoppable`. */
   private _reportedStoppable?: boolean;
 
+  /** What the shell last heard about `leavable`. */
+  private _reportedLeavable?: boolean;
+
   private _stageStartTime: number | null = null;
   private _diagnostics?: InstallDiagnostics;
   private _stageStartBytes: number = 0;
@@ -157,6 +154,12 @@ export class UtmProgressView extends LitElement {
   /** Whether the install operation has failed */
   get hasError(): boolean {
     return this._error !== null;
+  }
+
+  /** Whether the user can leave with the VM running and nothing left to start */
+  get leavable(): boolean {
+    // The VM runs and only Home Assistant is awaited, so leaving loses nothing
+    return this._error === null && isWaitStage(this._stage);
   }
 
   /** Whether `stop` can still end the install before UTM creates anything */
@@ -194,6 +197,8 @@ export class UtmProgressView extends LitElement {
 
   /** Check if a stage has measurable progress (0-100%) */
   private _hasMeasurableProgress(stage: InstallStage): boolean {
+    // Once Supervisor reports downloading Core
+    if (stage === "updating") return this._setup.progress !== null;
     return (
       MEASURABLE_STAGES.includes(stage) &&
       (stage === "downloading" || this._totalBytes > 0)
@@ -232,15 +237,28 @@ export class UtmProgressView extends LitElement {
     super.updated(changed);
 
     // The shell offers the stop only while it can still work
-    if (this.stoppable === this._reportedStoppable) return;
-    this._reportedStoppable = this.stoppable;
-    this.dispatchEvent(
-      new CustomEvent("install-stoppable", {
-        detail: { stoppable: this.stoppable },
-        bubbles: true,
-        composed: true,
-      })
-    );
+    if (this.stoppable !== this._reportedStoppable) {
+      this._reportedStoppable = this.stoppable;
+      this.dispatchEvent(
+        new CustomEvent("install-stoppable", {
+          detail: { stoppable: this.stoppable },
+          bubbles: true,
+          composed: true,
+        })
+      );
+    }
+    // And leaving only once the VM runs: a VM that exists but was never
+    // started would stay stopped
+    if (this.leavable !== this._reportedLeavable) {
+      this._reportedLeavable = this.leavable;
+      this.dispatchEvent(
+        new CustomEvent("install-leavable", {
+          detail: { leavable: this.leavable },
+          bubbles: true,
+          composed: true,
+        })
+      );
+    }
   }
 
   disconnectedCallback() {
@@ -314,23 +332,28 @@ export class UtmProgressView extends LitElement {
       await this._ensureVmStarted(vmId, signal);
       throwIfCancelled(signal);
 
-      // Wait for the VM to get an IP address. Asked again on a retry rather
-      // than reusing the last one: a restarted VM can get a new DHCP lease.
-      this._startStage("waiting");
-      wizardState.setSelection("ipAddress", undefined);
-      const ipAddress = await this._waitForVmIp(vmId, signal);
-      throwIfCancelled(signal);
-      wizardState.setSelection("ipAddress", ipAddress);
-
-      // Wait for the Home Assistant webserver to be ready
-      this._startStage("ready");
-      await this._waitForHaReady(ipAddress, signal);
-      throwIfCancelled(signal);
-
-      // Wait for Home Assistant to finish updating
-      this._startStage("updating");
-      await this._waitForHaUpdated(ipAddress, signal);
-      throwIfCancelled(signal);
+      const startedVmId = vmId;
+      const ipAddress = await waitForHomeAssistant({
+        vmAddress: async () => (await getUtmVmStatus(startedVmId)).ip_address,
+        stopOn: failsEveryTime,
+        onStage: (stage) => this._startStage(stage),
+        onSetup: (setup) => {
+          this._setup = setup;
+          this._progress = Math.round(setup.progress ?? 0);
+        },
+        messages: {
+          noAddress: localize(
+            "views.utm.utm_progress_view.the_virtual_machine_did_not_report_an_ip_address"
+          ),
+          notResponding: (ipAddress) =>
+            localize(
+              "views.utm.utm_progress_view.home_assistant_did_not_respond_at_value_within_5_minutes",
+              { value0: ipAddress }
+            ),
+          notUpdated: (address) => localize("utm.update_timeout", { address }),
+        },
+        signal,
+      });
 
       // Complete
       this._diagnostics?.advance("complete");
@@ -358,14 +381,7 @@ export class UtmProgressView extends LitElement {
       this._diagnostics?.fail(error);
       this._stage = "error";
       const installer = installerError(
-        error instanceof PollTimeoutError
-          ? {
-              code: "timeout",
-              message: error.message,
-              retryable: true,
-              details: {},
-            }
-          : error,
+        waitError(error),
         localize(
           "views.proxmox.proxmox_progress_view.failed_to_create_virtual_machine"
         )
@@ -461,6 +477,7 @@ export class UtmProgressView extends LitElement {
     this._stageStartTime = null;
     this._bytesProcessed = 0;
     this._totalBytes = 0;
+    this._setup = { progress: null, problem: null };
   }
 
   /** Download the HAOS qcow2 image, reporting download and extract progress */
@@ -561,6 +578,14 @@ export class UtmProgressView extends LitElement {
         .measurable=${this._hasMeasurableProgress(stage)}
         .hideEmptyDetails=${true}
         .error=${this._error?.message ?? null}
+        .warning=${stage === "updating" && this._setup.problem
+          ? haSetupProblemMessage(this._setup.problem)
+          : null}
+        .address=${checkedAddress(
+          stage,
+          this._wizardState.selections.ipAddress
+        )}
+        .leavable=${this.leavable}
       ></install-progress>
     `;
   }
@@ -625,70 +650,6 @@ export class UtmProgressView extends LitElement {
           "views.proxmox.proxmox_progress_view.installing_home_assistant"
         );
     }
-  }
-
-  /**
-   * Wait for the VM to get an IP address, polling every 2 seconds for up to
-   * 5 minutes.
-   */
-  private async _waitForVmIp(
-    vmId: string,
-    signal: AbortSignal
-  ): Promise<string> {
-    return pollUntil(async () => (await getUtmVmStatus(vmId)).ip_address, {
-      interval: POLL_INTERVAL_MS,
-      timeout: VM_IP_TIMEOUT_MS,
-      signal,
-      timeoutMessage: localize(
-        "views.utm.utm_progress_view.the_virtual_machine_did_not_report_an_ip_address"
-      ),
-      stopOn: failsEveryTime,
-    });
-  }
-
-  /**
-   * Wait for the Home Assistant webserver to be ready on port 80, polling
-   * every 2 seconds for up to 5 minutes.
-   *
-   * A timeout throws: reporting "Installation complete!" for a VM where Home
-   * Assistant never came up leaves the user with no idea what went wrong.
-   */
-  private async _waitForHaReady(
-    ipAddress: string,
-    signal: AbortSignal
-  ): Promise<void> {
-    await pollUntil(async () => (await checkHaReady(ipAddress)) || null, {
-      interval: POLL_INTERVAL_MS,
-      timeout: HA_READY_TIMEOUT_MS,
-      signal,
-      timeoutMessage: localize(
-        "views.utm.utm_progress_view.home_assistant_did_not_respond_at_value_within_5_minutes",
-        { value0: ipAddress }
-      ),
-    });
-  }
-
-  /**
-   * Wait for Home Assistant to finish updating to the latest version.
-   * This checks for the manifest.json endpoint which becomes available
-   * after the initial setup and updates are complete.
-   * Polls every 2 seconds for up to 1 hour.
-   *
-   * As with the readiness check, a timeout throws instead of quietly
-   * reporting success.
-   */
-  private async _waitForHaUpdated(
-    ipAddress: string,
-    signal: AbortSignal
-  ): Promise<void> {
-    await pollUntil(async () => (await checkHaUpdated(ipAddress)) || null, {
-      interval: POLL_INTERVAL_MS,
-      timeout: HA_UPDATED_TIMEOUT_MS,
-      signal,
-      timeoutMessage: localize("utm.update_timeout", {
-        address: `http://${ipAddress}`,
-      }),
-    });
   }
 }
 

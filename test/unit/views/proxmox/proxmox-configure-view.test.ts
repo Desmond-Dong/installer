@@ -25,6 +25,13 @@ import {
 } from "../../tauri-ipc.js";
 
 /** Mount the view and wait for the node and storage lookups to settle */
+/** The cores, memory and disk sliders, in the shared resources component */
+async function resourcesOf(el: HTMLElement): Promise<ShadowRoot> {
+  const resources = el.shadowRoot!.querySelector("vm-resources")!;
+  await resources.updateComplete;
+  return resources.shadowRoot!;
+}
+
 async function mount(): Promise<ProxmoxConfigureView> {
   const el = await fixture<ProxmoxConfigureView>(html`
     <proxmox-configure-view></proxmox-configure-view>
@@ -69,15 +76,13 @@ describe("proxmox-configure-view", () => {
               name: "pve",
               status: "online",
               cpu_usage: 12.5,
-              memory_used: null,
-              memory_total: null,
+              cpu_count: null,
             },
             {
               name: "pve2",
               status: "online",
               cpu_usage: null,
-              memory_used: null,
-              memory_total: null,
+              cpu_count: null,
             },
           ];
         case "proxmox_get_next_vm_id":
@@ -107,7 +112,7 @@ describe("proxmox-configure-view", () => {
 
   it("exposes named controls and announces actual slider sizes", async () => {
     const el = await mount();
-    const sliders = [...el.shadowRoot!.querySelectorAll("wa-slider")];
+    const sliders = [...(await resourcesOf(el)).querySelectorAll("wa-slider")];
     await Promise.all(sliders.map((slider) => slider.updateComplete));
     const snapshot = await fullA11ySnapshot();
     expect(findByRole(snapshot, "textbox").map((node) => node.name)).to.include(
@@ -131,21 +136,116 @@ describe("proxmox-configure-view", () => {
     ).to.include("VM ID");
   });
 
-  // Chromium ignores a pattern that is invalid under the `v` flag, which
-  // would leave every name valid
-  it("validates the display name against the allowed characters", async () => {
+  // Proxmox only rejects a name when it creates the VM, after the download
+  it("only accepts display names Proxmox accepts", async () => {
     const el = await mount();
-    const name = el.shadowRoot!.querySelector<WaInput>("wa-input[pattern]")!;
+    const name = el.shadowRoot!.querySelector<WaInput>(
+      'wa-input[label="Display name"]'
+    )!;
+    const type = async (value: string) => {
+      name.value = value;
+      name.dispatchEvent(new Event("input"));
+      await el.updateComplete;
+      await name.updateComplete;
+    };
 
-    // Set directly, as typing would sanitize the name before it is checked
-    name.value = "bad name!";
-    await name.updateComplete;
-    expect(name.checkValidity()).to.be.false;
-    expect(name.validity.patternMismatch).to.be.true;
+    // "home-" is typed on the way to "home-assistant", so it stays, as does
+    // what Proxmox rejects: the field always shows the name that is used
+    name.focus();
+    for (const rejected of ["home_assistant", "home assistant", "home-", ""]) {
+      await type(rejected);
+      expect(name.value).to.equal(rejected);
+      expect(wizardState.getState().selections.vmName).to.equal(rejected);
+      expect(name.checkValidity(), rejected).to.be.false;
+      expect(wizardState.getState().selections.proxmoxConfigureReady).to.be
+        .false;
+      expect(
+        el.shadowRoot!.querySelector(".name-hint")!.textContent
+      ).to.contain("Start and end with a letter or number");
+      // The error must not take focus from someone still typing
+      expect(el.shadowRoot!.activeElement).to.equal(name);
+    }
 
-    name.value = "home-assistant_1.0";
-    await name.updateComplete;
+    await type("home-assistant.lan");
     expect(name.checkValidity()).to.be.true;
+    expect(wizardState.getState().selections.proxmoxConfigureReady).to.be.true;
+  });
+
+  it("keeps the VM ID as typed and only saves one Proxmox accepts", async () => {
+    const el = await mount();
+    const vmId = el.shadowRoot!.querySelector<WaInput>(
+      'wa-input[type="number"]'
+    )!;
+    const type = async (value: string) => {
+      vmId.value = value;
+      vmId.dispatchEvent(new Event("input"));
+      await el.updateComplete;
+      await vmId.updateComplete;
+    };
+
+    // None of these may turn into 100, or into what was there before
+    vmId.focus();
+    for (const rejected of ["", "99", "1e5", "1000000000"]) {
+      await type(rejected);
+      expect(vmId.value).to.equal(rejected);
+      expect(wizardState.getState().selections.proxmoxVmId, rejected).to.be
+        .undefined;
+      expect(vmId.checkValidity(), rejected).to.be.false;
+      expect(wizardState.getState().selections.proxmoxConfigureReady).to.be
+        .false;
+      expect(
+        el.shadowRoot!.querySelector(".vm-id-hint")!.textContent
+      ).to.contain("Enter a whole number from 100 to 999,999,999.");
+      // In the input's hint slot, so it is the field's accessible description
+      expect(el.shadowRoot!.querySelector(".vm-id-hint")!.slot).to.equal(
+        "hint"
+      );
+      // The error must not take focus from someone still typing
+      expect(el.shadowRoot!.activeElement).to.equal(vmId);
+    }
+
+    // What is typed after clearing is the whole ID, without a default
+    await type("");
+    await type("250");
+    expect(vmId.value).to.equal("250");
+    expect(vmId.checkValidity()).to.be.true;
+    const selections = wizardState.getState().selections;
+    expect(selections.proxmoxVmId).to.equal(250);
+    expect(selections.proxmoxConfigureReady).to.be.true;
+  });
+
+  it("suggests a free VM ID again after leaving with a cleared one", async () => {
+    wizardState.setSelection("proxmoxVmId", 250);
+    const first = await mount();
+    const vmId = first.shadowRoot!.querySelector<WaInput>(
+      'wa-input[type="number"]'
+    )!;
+    vmId.value = "";
+    vmId.dispatchEvent(new Event("input"));
+    await first.updateComplete;
+    first.remove();
+
+    // The cleared field is not a choice, so 250 doesn't come back either
+    const el = await mount();
+
+    const restored = el.shadowRoot!.querySelector<WaInput>(
+      'wa-input[type="number"]'
+    )!;
+    expect(restored.value).to.equal("100");
+    expect(wizardState.getState().selections.proxmoxVmId).to.equal(100);
+  });
+
+  it("offers no more cores than the selected node has", async () => {
+    // The mocked pve2 has 8 CPUs
+    wizardState.setSelection("proxmoxNode", "pve2");
+    wizardState.setSelection("cpuCores", 16);
+
+    const el = await mount();
+
+    expect(wizardState.getState().selections.cpuCores).to.equal(8);
+    const cores = (await resourcesOf(el)).querySelector("wa-slider")!;
+    expect(cores.max).to.equal(3); // 2, 4, 6 and 8 cores
+    expect(cores.value).to.equal(3);
   });
 
   it("shows storage labels without template indentation", async () => {
@@ -197,7 +297,7 @@ describe("proxmox-configure-view", () => {
     ) as NodeListOf<WaSelect>;
     expect(nodeSelect.value).to.equal("pve2");
     expect(storageSelect.value).to.equal("local-lvm");
-    const text = el.shadowRoot!.textContent!;
+    const text = (await resourcesOf(el)).textContent!;
     expect(text).to.contain("8 cores");
     expect(text).to.contain("8 GB");
     expect(text).to.contain("64 GB");
@@ -250,7 +350,6 @@ describe("proxmox-configure-view", () => {
         storage_type: "dir",
         content: ["images"],
         available: 100,
-        total: 100,
         active: true,
       },
     ]);
@@ -269,7 +368,6 @@ describe("proxmox-configure-view", () => {
         storage_type: "dir",
         content: ["images"],
         available: 100,
-        total: 100,
         active: true,
       },
     ];
@@ -328,7 +426,6 @@ describe("proxmox-configure-view", () => {
         storage_type: "dir",
         content: ["images"],
         available: 100,
-        total: 100,
         active: true,
       },
     ];
@@ -404,7 +501,6 @@ describe("proxmox-configure-view", () => {
           storage_type: "dir",
           content: ["images"],
           available: 100,
-          total: 100,
           active: true,
         },
       ];
@@ -499,7 +595,9 @@ describe("proxmox-configure-view", () => {
       } else {
         expect(selections.proxmoxSession).to.be.undefined;
         expect(selections.proxmoxConnected).to.be.false;
-        expect(el.shadowRoot!.textContent).to.contain("Session expired");
+        expect(el.shadowRoot!.textContent).to.contain(
+          "Your Proxmox session expired"
+        );
         expect(el.shadowRoot!.textContent).to.not.contain("Temporary failure");
         expect(
           el.shadowRoot!.querySelector("wa-button")!.textContent
@@ -761,7 +859,9 @@ describe("proxmox-configure-view", () => {
             "proxmox_list_nodes",
             "proxmox_get_next_vm_id",
           ]);
-          expect(el.shadowRoot!.textContent).to.contain("Session expired");
+          expect(el.shadowRoot!.textContent).to.contain(
+            "Your Proxmox session expired"
+          );
           expect(el.shadowRoot!.textContent).to.not.contain(
             "Temporary failure"
           );
@@ -824,7 +924,6 @@ describe("proxmox-configure-view", () => {
       storage: "local",
       bridge: "vmbr0",
       vm_id: 100,
-      auto_start: true,
     });
     expect(
       el.shadowRoot!.querySelector("[role=alert]")!.textContent
@@ -858,6 +957,13 @@ describe("proxmox-configure-view", () => {
     expect(el.shadowRoot!.querySelector("wa-button")!.textContent).to.contain(
       "Reconnect"
     );
+    // Reconnecting starts from the same server
+    expect(
+      wizardState.getState().selections.proxmoxPreviousServer
+    ).to.deep.equal({
+      server_url: "https://192.168.1.100:8006",
+      certificate_sha256: undefined,
+    });
   });
 
   it("offers reconnect when the session is missing", async () => {

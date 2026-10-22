@@ -56,6 +56,41 @@ pub fn warning(code: &'static str) {
     record(log::Level::Warn, format!("warning {code}"));
 }
 
+/// The setup status last recorded, as the install polls it every few seconds.
+static LAST_SETUP_STATUS: Mutex<Option<String>> = Mutex::new(None);
+
+/// Record what Supervisor reports while it installs Home Assistant, when that
+/// changes. Only the fixed problem kinds and the progress in quarters reach
+/// the log, never Supervisor's own text.
+pub fn setup_status(status: &hai_core::HaSetupStatus) {
+    let quarter = |progress: Option<f64>| {
+        progress.map_or_else(
+            || "none".to_owned(),
+            |progress| format!("{}%", (progress / 25.0).floor() as u8 * 25),
+        )
+    };
+    let line = format!(
+        "supervisor self_update={} core_install={} problems={:?}",
+        quarter(status.supervisor_update_progress),
+        quarter(status.core_install_progress),
+        status.problems
+    );
+    if let Ok(mut last) = LAST_SETUP_STATUS.lock() {
+        if last.as_ref() == Some(&line) {
+            return;
+        }
+        *last = Some(line.clone());
+    }
+    record(
+        if status.problems.is_empty() {
+            log::Level::Info
+        } else {
+            log::Level::Warn
+        },
+        line,
+    );
+}
+
 /// Preserve a useful failure category without persisting arbitrary error text.
 pub fn error_category(error: &str) -> &'static str {
     let error = error.to_ascii_lowercase();
@@ -201,6 +236,8 @@ pub enum Outcome {
     Failed,
 }
 
+/// Why a frontend step failed. The frontend sends a command's `CommandError`
+/// code as is, so every code a command can return has a category here.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCategory {
@@ -212,15 +249,45 @@ pub enum ErrorCategory {
     DiskServiceUnavailable,
     ImageTooLarge,
     Timeout,
+    #[serde(alias = "network")]
     NetworkError,
     DownloadFailed,
     ExtractionFailed,
     ProxmoxError,
+    #[serde(alias = "utm")]
     UtmError,
     Cancelled,
     OperationFailed,
     FrontendError,
     UnhandledRejection,
+    Io,
+    DeviceNotFound,
+    DeviceBusy,
+    ProxmoxApi,
+    ProxmoxActionRequired,
+    ProxmoxSessionExpired,
+    ProxmoxCertificateChanged,
+    ProxmoxTwoFactor,
+    UtmOperationUncertain,
+    UtmVmCreated,
+    UnsupportedPlatform,
+    Json,
+    InvalidConfig,
+    RateLimited,
+    DriveTooSmall,
+    TemporaryImageUnavailable,
+    OperationInProgress,
+    Internal,
+    /// A problem Supervisor reported held up installing Home Assistant: the
+    /// frontend's `home_assistant_` codes, one per `HaSetupProblem`.
+    HomeAssistantNoInternet,
+    HomeAssistantFreeSpace,
+    HomeAssistantDockerRatelimit,
+    HomeAssistantUpdateFailed,
+    /// Any other value. A code without a category is still logged, as this;
+    /// the value itself never reaches the log.
+    #[serde(other)]
+    Unrecognized,
 }
 
 #[tauri::command]
@@ -284,9 +351,11 @@ pub(crate) fn test_log_tail() -> Vec<String> {
     TAIL.lock().unwrap().iter().cloned().collect()
 }
 
-#[cfg(all(test, feature = "mock"))]
+/// Start from an empty tail, with no setup status recorded yet.
+#[cfg(test)]
 pub(crate) fn clear_test_log_tail() {
     TAIL.lock().unwrap().clear();
+    *LAST_SETUP_STATUS.lock().unwrap() = None;
 }
 
 #[tauri::command]
@@ -345,10 +414,107 @@ mod tests {
     }
 
     #[test]
+    // Other tests clear the shared tail, or record setup statuses of their own
+    #[serial_test::serial]
+    fn setup_status_records_its_changes_as_fixed_categories() {
+        use hai_core::{HaSetupProblem, HaSetupStatus};
+
+        clear_test_log_tail();
+        let status = |update, install, problems: &[HaSetupProblem]| HaSetupStatus {
+            supervisor_update_progress: update,
+            core_install_progress: install,
+            problems: problems.to_vec(),
+        };
+
+        setup_status(&status(Some(10.0), None, &[HaSetupProblem::UpdateFailed]));
+        // The same again, or a download step within its quarter, adds nothing
+        setup_status(&status(Some(20.0), None, &[HaSetupProblem::UpdateFailed]));
+        setup_status(&status(None, Some(30.0), &[]));
+        setup_status(&status(None, Some(49.9), &[]));
+        setup_status(&status(None, Some(100.0), &[]));
+
+        let lines: Vec<_> = test_log_tail()
+            .into_iter()
+            .filter(|line| line.contains(" supervisor "))
+            .map(|line| line.split_once(' ').unwrap().1.to_owned())
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "supervisor self_update=0% core_install=none problems=[UpdateFailed]",
+                "supervisor self_update=none core_install=25% problems=[]",
+                "supervisor self_update=none core_install=100% problems=[]",
+            ]
+        );
+    }
+
+    #[test]
+    fn every_setup_problem_has_a_failure_category() {
+        use hai_core::HaSetupProblem::*;
+
+        // The frontend ends a wait that a problem holds up with its code
+        for problem in [NoInternet, FreeSpace, DockerRatelimit, UpdateFailed] {
+            let code = format!(
+                "home_assistant_{}",
+                serde_json::to_value(problem).unwrap().as_str().unwrap()
+            );
+            let category = serde_json::from_value::<ErrorCategory>(code.clone().into()).unwrap();
+            assert!(
+                !matches!(category, ErrorCategory::Unrecognized),
+                "{code} has no category"
+            );
+        }
+    }
+
+    #[test]
     fn frontend_ipc_rejects_free_form_fields() {
         assert!(serde_json::from_str::<Flow>("\"private.example\"").is_err());
         assert!(serde_json::from_str::<Stage>("\"password\"").is_err());
-        assert!(serde_json::from_str::<ErrorCategory>("\"ticket=secret\"").is_err());
+        let error = serde_json::from_str::<ErrorCategory>("\"ticket=secret\"").unwrap();
+        assert_eq!(format!("{error:?}"), "Unrecognized");
+    }
+
+    #[test]
+    fn every_command_error_code_has_a_category() {
+        // The codes in command_error.rs and the ones commands.rs creates itself
+        for code in [
+            "network",
+            "io",
+            "device_not_found",
+            "device_busy",
+            "checksum_mismatch",
+            "permission_denied",
+            "disk_service_unavailable",
+            "cancelled",
+            "proxmox_api",
+            "proxmox_action_required",
+            "proxmox_session_expired",
+            "proxmox_certificate_changed",
+            "proxmox_two_factor",
+            "utm",
+            "utm_operation_uncertain",
+            "utm_vm_created",
+            "drive_disconnected",
+            "write_protected",
+            "unsupported_platform",
+            "json",
+            "invalid_config",
+            "rate_limited",
+            "download_failed",
+            "extraction_failed",
+            "verification_failed",
+            "image_too_large",
+            "drive_too_small",
+            "temporary_image_unavailable",
+            "operation_in_progress",
+            "internal",
+        ] {
+            let category = serde_json::from_value::<ErrorCategory>(code.into()).unwrap();
+            assert!(
+                !matches!(category, ErrorCategory::Unrecognized),
+                "{code} has no category"
+            );
+        }
     }
 
     #[test]

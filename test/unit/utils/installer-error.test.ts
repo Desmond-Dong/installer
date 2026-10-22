@@ -13,6 +13,18 @@ describe("installer errors", () => {
     expect(result.retryable).to.be.false;
   });
 
+  it("keeps internals of a configuration error out of the message", () => {
+    const result = installerError(
+      ipcError("invalid_config", "Cannot parse board from: haos_x.img.xz")
+    );
+    expect(result.message).to.equal(
+      "The installer couldn't prepare this installation. Report the problem if it continues."
+    );
+    expect(
+      installerError(ipcError("proxmox_session_expired", "raw")).message
+    ).to.contain("Reconnect to Proxmox");
+  });
+
   it("formats structured capacity details and rejects unsafe retry", () => {
     const result = installerError(
       ipcError("image_too_large", "raw bytes", false, {
@@ -61,6 +73,43 @@ describe("installer errors", () => {
     expect(result.message).to.equal(
       'Node "pve" is offline. Choose an online node or start it in Proxmox.'
     );
+  });
+
+  it("shows permission, two-factor, rate-limit and drive-size errors from the catalog", () => {
+    for (const [code, key, params, expected] of [
+      [
+        "permission_denied",
+        "backend.disk.removable_volumes_blocked",
+        { device: "/dev/rdisk4" },
+        "macOS blocked access to /dev/rdisk4.",
+      ],
+      [
+        "proxmox_two_factor",
+        "backend.proxmox.two_factor_http_error",
+        { status: 500 },
+        "Proxmox returned HTTP 500 while completing the second-factor login.",
+      ],
+      [
+        "rate_limited",
+        "backend.download.github_rate_limited",
+        { minutes: 3 },
+        "Wait at least 3 minutes, then try again.",
+      ],
+      [
+        "drive_too_small",
+        "backend.disk.drive_too_small",
+        { size: "32" },
+        "At least a 32 GB drive is required.",
+      ],
+    ] as const) {
+      const result = installerError(
+        ipcError(code, "English from Rust", false, {
+          message_key: key,
+          message_params: params,
+        })
+      );
+      expect(result.message, code).to.contain(expected);
+    }
   });
 
   it("shows a message inside a backend message in the user's language", () => {

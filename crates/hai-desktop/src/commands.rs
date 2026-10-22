@@ -9,13 +9,15 @@ use crate::command_error::CommandError;
 use crate::diagnostics::Operation;
 use crate::flash_state::FlashState;
 use crate::install_jobs::InstallJobs;
+use hai_core::disk::Image;
 use hai_core::download::TemporaryImage;
 use hai_core::keep_awake::KeepAwake;
 use hai_core::{
     BlockDevice, DeviceBackend, DeviceManifest, ExpectedDevice, FlashProgress, FlashRequest,
-    FlashResult, FlashStage, HaosRelease, HostBackend, ImageFormat, ProgressCallback,
-    ProxmoxBackend, ProxmoxBridge, ProxmoxCredentials, ProxmoxNode, ProxmoxSession, ProxmoxStorage,
-    ProxmoxVmConfig, ProxmoxVmResult, ReleaseSource, SystemInfo, UtmBackend, VmStatusInfo,
+    FlashResult, FlashStage, HaSetupStatus, HaosRelease, HostBackend, ImageFormat,
+    ProgressCallback, ProxmoxBackend, ProxmoxBridge, ProxmoxCredentials, ProxmoxNode,
+    ProxmoxSession, ProxmoxStorage, ProxmoxVmConfig, ProxmoxVmResult, ReleaseSource, SystemInfo,
+    UtmBackend, VmStatusInfo,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -110,18 +112,11 @@ async fn keep_awake(reason: &str) -> Option<KeepAwake> {
 
 /// Check internet access before starting an installation flow.
 #[tauri::command]
-pub async fn check_connection() -> Result<(), String> {
+pub async fn check_connection() -> Result<(), CommandError> {
     Backend
         .check_connection()
         .await
-        .map_err(connection_error_message)
-}
-
-fn connection_error_message(error: hai_core::Error) -> String {
-    match error {
-        hai_core::Error::DownloadFailed(message) => message,
-        error => error.to_string(),
-    }
+        .map_err(CommandError::from_query)
 }
 
 /// List all block devices
@@ -185,11 +180,14 @@ fn find_flash_target<'a>(
     })?;
     if device.size < config.minimum_reported_storage_bytes() {
         // A board minimum, not the image size: a bigger drive is the only fix
-        return Err(CommandError::new(
+        return Err(CommandError::with_message(
             "drive_too_small",
-            format!(
-                "The selected drive is too small. At least a {:.0} GB drive is required.",
-                config.minimum_storage_bytes as f64 / 1_000_000_000.0
+            &hai_core::message!(
+                "backend.disk.drive_too_small",
+                size = format!(
+                    "{:.0}",
+                    config.minimum_storage_bytes as f64 / 1_000_000_000.0
+                ),
             ),
             false,
         ));
@@ -253,6 +251,17 @@ where
         .check_write_privileges()
         .map_err(CommandError::from)?;
 
+    if let Some(wifi) = &request.wifi {
+        // An installer would leave the network behind on the drive it runs from
+        if hai_core::hardware_installer::find(&request.board).is_some() {
+            return Err(hai_core::Error::InvalidConfig(
+                "Wi-Fi can't be set up for this device.".into(),
+            )
+            .into());
+        }
+        hai_core::haos_config::validate(wifi)?;
+    }
+
     // Send initial progress
     callback.on_progress(FlashProgress {
         stage: FlashStage::Downloading,
@@ -315,6 +324,13 @@ where
         .await
         .map_err(CommandError::from)?;
 
+    let mut image = Image::new(&extracted_path);
+    if let Some(wifi) = request.wifi.clone() {
+        image = tokio::task::spawn_blocking(move || hai_core::haos_config::with_wifi(image, &wifi))
+            .await
+            .map_err(|e| hai_core::Error::Io(std::io::Error::other(e)))??;
+    }
+
     // Check image size vs device size
     let image_size = tokio::fs::metadata(&extracted_path)
         .await
@@ -338,7 +354,7 @@ where
     // Write to device
     backend
         .write_image(
-            &extracted_path,
+            &image,
             &request.device_id,
             &request.expected_device,
             request.verify,
@@ -545,6 +561,13 @@ pub async fn check_utm_status() -> Result<hai_core::UtmStatus, CommandError> {
         .map_err(CommandError::from_query)
 }
 
+/// Ask macOS whether the installer may control UTM, before anything is
+/// downloaded. The first time, this shows the Automation prompt.
+#[tauri::command(async)]
+pub fn check_utm_automation() -> Result<(), CommandError> {
+    UtmBackend::check_automation(&Backend).map_err(CommandError::from_query)
+}
+
 /// Create a Home Assistant VM in UTM
 #[tauri::command]
 pub async fn create_utm_vm(
@@ -626,6 +649,17 @@ pub async fn check_ha_ready(ip_address: String) -> bool {
 #[tauri::command]
 pub async fn check_ha_updated(ip_address: String) -> bool {
     Backend.check_ha_updated(&ip_address).await
+}
+
+/// What Supervisor reports while it installs Home Assistant, or `None`
+/// without a full answer from the landing page
+#[tauri::command]
+pub async fn get_ha_setup_status(ip_address: String) -> Option<HaSetupStatus> {
+    let status = Backend.ha_setup_status(&ip_address).await;
+    if let Some(status) = &status {
+        crate::diagnostics::setup_status(status);
+    }
+    status
 }
 
 // =============================================================================
@@ -863,11 +897,14 @@ mod tests {
             cpu_cores: 2,
             memory_mb: 4096,
             disk_size_gb: 16,
-            auto_start: true,
         };
         let error = proxmox_check_vm_config(session, config).await.unwrap_err();
 
-        assert_eq!(error.code, "proxmox_api");
+        assert_eq!(error.code, "proxmox_action_required");
+        assert_eq!(
+            error.details["message_key"],
+            "backend.proxmox.disk_too_small"
+        );
     }
 
     // The configure view picks Retry or Reconnect from the code, so a failed
@@ -973,19 +1010,21 @@ mod tests {
     }
 
     #[test]
-    fn connection_error_message_unwraps_download_errors() {
-        let message =
-            "Cannot reach version.home-assistant.io. Check your internet connection and try again.";
-        let error = hai_core::Error::DownloadFailed(message.to_string());
-        assert_eq!(connection_error_message(error), message);
-    }
-
-    #[test]
-    fn connection_error_message_preserves_other_errors() {
+    fn unreachable_services_are_retryable_catalog_messages() {
+        let error = CommandError::from_query(hai_core::Error::ServiceUnavailable(
+            hai_core::message!("backend.download.version_service_unreachable"),
+        ));
+        let value = tauri::ipc::InvokeError::from(error).0;
+        assert_eq!(value["code"], "network");
+        assert_eq!(value["retryable"], true);
         assert_eq!(
-            connection_error_message(hai_core::Error::Cancelled),
-            "Operation cancelled"
+            value["details"]["message_key"],
+            "backend.download.version_service_unreachable"
         );
+        assert!(value["message"]
+            .as_str()
+            .unwrap()
+            .contains("version.hasscn.top"));
     }
 
     #[cfg(feature = "mock")]
@@ -1189,6 +1228,22 @@ mod tests {
 
     #[test]
     #[cfg(feature = "mock")]
+    fn test_check_utm_automation_mock_returns_ok() {
+        assert!(check_utm_automation().is_ok());
+    }
+
+    // Asking again can't change the platform, so the check offers no retry.
+    #[cfg(not(feature = "mock"))] // asserts on the real backend's answers
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn test_check_utm_automation_unsupported_off_macos() {
+        let err = check_utm_automation().unwrap_err();
+        assert_eq!(err.code, "unsupported_platform");
+        assert!(!err.retryable);
+    }
+
+    #[test]
+    #[cfg(feature = "mock")]
     fn test_get_utm_vm_status_mock_returns_running_vm() {
         let result = get_utm_vm_status("test-vm".to_string());
         assert!(result.is_ok());
@@ -1199,11 +1254,99 @@ mod tests {
 
     // ===== check_ha_ready() Tests =====
 
+    /// The setup statuses recorded in the shared diagnostics tail.
+    #[cfg(not(feature = "mock"))]
+    fn setup_status_lines() -> Vec<String> {
+        crate::diagnostics::test_log_tail()
+            .into_iter()
+            .filter(|line| line.contains(" supervisor "))
+            .collect()
+    }
+
     #[cfg(not(feature = "mock"))] // asserts on the real backend's answers
     #[tokio::test]
-    async fn test_check_ha_ready_empty_ip() {
-        let result = check_ha_ready("".to_string()).await;
-        assert!(!result, "Should return false for empty IP");
+    // Isolated from other tests that clear the tail or record setup statuses
+    #[serial_test::serial]
+    async fn ha_setup_status_forwards_a_full_answer_and_records_only_its_categories() {
+        crate::diagnostics::clear_test_log_tail();
+        let mut server = mockito::Server::new_async().await;
+        for (path, data) in [
+            (
+                "jobs",
+                r#"{"jobs":[{"name":"home_assistant_core_install","progress":42.5}]}"#,
+            ),
+            (
+                "network",
+                r#"{"host_internet":false,"supervisor_internet":false}"#,
+            ),
+            (
+                "resolution",
+                r#"{"issues":[{"type":"update_failed","context":"supervisor","reference":"2026.10.3","uuid":"private-uuid"}]}"#,
+            ),
+        ] {
+            server
+                .mock("GET", format!("/supervisor-api/{path}/info").as_str())
+                .with_body(format!(r#"{{"result":"ok","data":{data}}}"#))
+                .create_async()
+                .await;
+        }
+
+        assert_eq!(
+            get_ha_setup_status(server.host_with_port()).await,
+            Some(HaSetupStatus {
+                core_install_progress: Some(42.5),
+                supervisor_update_progress: None,
+                problems: vec![
+                    hai_core::HaSetupProblem::NoInternet,
+                    hai_core::HaSetupProblem::UpdateFailed,
+                ],
+            })
+        );
+        let lines = setup_status_lines();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].ends_with(
+                "supervisor self_update=none core_install=25% problems=[NoInternet, UpdateFailed]"
+            ),
+            "{lines:?}"
+        );
+        // Never the address, or Supervisor's references
+        let tail = crate::diagnostics::test_log_tail().join("\n");
+        for private in [
+            server.host_with_port().as_str(),
+            "2026.10.3",
+            "private-uuid",
+        ] {
+            assert!(!tail.contains(private), "{tail}");
+        }
+    }
+
+    #[cfg(not(feature = "mock"))] // asserts on the real backend's answers
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn ha_setup_status_without_a_full_answer_is_none_and_records_nothing() {
+        crate::diagnostics::clear_test_log_tail();
+        // Only the network answers, as while Supervisor restarts
+        let mut partial = mockito::Server::new_async().await;
+        partial
+            .mock("GET", "/supervisor-api/network/info")
+            .with_body(r#"{"result":"ok","data":{"host_internet":false}}"#)
+            .create_async()
+            .await;
+        assert_eq!(get_ha_setup_status(partial.host_with_port()).await, None);
+
+        // And once Core runs, nothing answers
+        let core = mockito::Server::new_async().await;
+        assert_eq!(get_ha_setup_status(core.host_with_port()).await, None);
+
+        assert!(setup_status_lines().is_empty());
+    }
+
+    #[cfg(feature = "mock")]
+    #[tokio::test]
+    async fn ha_setup_status_mock_has_no_landing_page() {
+        // The mock's Home Assistant is ready at once, so its landing page is gone
+        assert_eq!(get_ha_setup_status("192.168.1.100".into()).await, None);
     }
 
     #[cfg(not(feature = "mock"))] // asserts on the real backend's answers
@@ -1398,7 +1541,7 @@ mod tests {
 
         async fn write_image<P: ProgressCallback>(
             &self,
-            _: &std::path::Path,
+            _: &hai_core::disk::Image,
             _: &str,
             _: &hai_core::ExpectedDevice,
             _: bool,
@@ -1464,9 +1607,9 @@ mod tests {
     #[tokio::test]
     async fn privilege_failures_abort_before_progress_or_release_lookup() {
         fn not_elevated() -> hai_core::Result<()> {
-            Err(hai_core::Error::PermissionDenied(
-                "Run as administrator".into(),
-            ))
+            Err(hai_core::Error::PermissionDenied(hai_core::message!(
+                "backend.disk.run_as_administrator"
+            )))
         }
         fn query_failed() -> hai_core::Result<()> {
             Err(hai_core::Error::Io(std::io::Error::other(
@@ -1482,6 +1625,7 @@ mod tests {
                 board: "rpi5-64".into(),
                 verify: true,
                 expected_device: ExpectedDevice::default(),
+                wifi: None,
             };
             run_flash(&PreflightBackend { check }, &request, callback).await
         }
@@ -1496,6 +1640,27 @@ mod tests {
             .await
             .unwrap_err();
         assert!(retry.message.contains("release lookup reached"), "{retry}");
+    }
+
+    #[tokio::test]
+    async fn wifi_is_refused_before_anything_is_downloaded() {
+        for (board, password) in [("green-installer", "12345678"), ("rpi5-64", "short")] {
+            let request = FlashRequest {
+                device_id: "unused-device".into(),
+                board: board.into(),
+                verify: true,
+                expected_device: ExpectedDevice::default(),
+                wifi: Some(hai_core::WifiConfig {
+                    ssid: "Home".into(),
+                    password: password.into(),
+                }),
+            };
+            let backend = PreflightBackend { check: || Ok(()) };
+            let error = run_flash(&backend, &request, &NoProgressExpected)
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, "invalid_config", "{board}: {error}");
+        }
     }
 }
 
@@ -1570,7 +1735,7 @@ mod mock_tests {
         }
         async fn write_image<P: ProgressCallback>(
             &self,
-            path: &std::path::Path,
+            image: &hai_core::disk::Image,
             _: &str,
             _: &hai_core::ExpectedDevice,
             _: bool,
@@ -1580,7 +1745,7 @@ mod mock_tests {
                 self.outcome, "oversized",
                 "oversized image reached disk writer"
             );
-            assert_eq!(std::fs::read(path).unwrap(), b"image");
+            assert_eq!(std::fs::read(image.path()).unwrap(), b"image");
             match self.outcome {
                 "write" => Err(hai_core::Error::Io(std::io::Error::other(
                     "test write failure",
@@ -1720,6 +1885,10 @@ mod mock_tests {
 
     impl UtmBackend for UtmCreationBackend {
         async fn check_utm_status(&self) -> hai_core::Result<hai_core::UtmStatus> {
+            unreachable!()
+        }
+
+        fn check_automation(&self) -> hai_core::Result<()> {
             unreachable!()
         }
 
@@ -2012,7 +2181,6 @@ mod mock_tests {
             cpu_cores: 2,
             memory_mb: 4096,
             disk_size_gb: 32,
-            auto_start: true,
         };
         let error = proxmox_create_vm(session, config, "current".into(), progress, app.state())
             .await
@@ -2023,7 +2191,7 @@ mod mock_tests {
         assert!(error.retryable);
         assert_eq!(
             *stages.lock().unwrap(),
-            [FlashStage::Downloading, FlashStage::Extracting]
+            [FlashStage::Downloading, FlashStage::Downloading]
         );
     }
 
@@ -2056,6 +2224,7 @@ mod mock_tests {
                 vendor: device.vendor,
                 serial: device.serial,
             },
+            wifi: None,
         }
     }
 
@@ -2117,7 +2286,7 @@ mod mock_tests {
 
         async fn write_image<P: ProgressCallback>(
             &self,
-            _: &std::path::Path,
+            _: &hai_core::disk::Image,
             _: &str,
             _: &hai_core::ExpectedDevice,
             _: bool,
@@ -2204,6 +2373,19 @@ mod mock_tests {
         assert!(result.duration_secs < 60);
     }
 
+    #[tokio::test]
+    #[serial]
+    async fn run_flash_adds_wifi_against_mock_backend() {
+        let mut request = request("mock-sd-card-32gb", "rpi5-64").await;
+        request.wifi = Some(hai_core::WifiConfig {
+            ssid: "Home".into(),
+            password: "12345678".into(),
+        });
+        run_flash(&BackendMock, &request, &NoOpProgress)
+            .await
+            .unwrap();
+    }
+
     /// Delegates to the mock, but fails any release lookup and records what
     /// was downloaded.
     #[derive(Default)]
@@ -2255,14 +2437,14 @@ mod mock_tests {
         }
         async fn write_image<P: ProgressCallback>(
             &self,
-            path: &std::path::Path,
+            image: &hai_core::disk::Image,
             device_id: &str,
             expected: &hai_core::ExpectedDevice,
             verify: bool,
             callback: &P,
         ) -> hai_core::Result<()> {
             BackendMock
-                .write_image(path, device_id, expected, verify, callback)
+                .write_image(image, device_id, expected, verify, callback)
                 .await
         }
     }

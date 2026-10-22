@@ -40,9 +40,29 @@ const MIN_DISK_SIZE_GB: u32 = 32;
 
 fn validate_disk_size(disk_size_gb: u32) -> Result<()> {
     if disk_size_gb < MIN_DISK_SIZE_GB {
-        return Err(Error::ProxmoxApi(format!(
-            "The HAOS disk must be at least {} GiB. Proxmox cannot shrink the imported disk.",
-            MIN_DISK_SIZE_GB
+        return Err(Error::ProxmoxActionRequired(crate::message!(
+            "backend.proxmox.disk_too_small",
+            size = MIN_DISK_SIZE_GB,
+        )));
+    }
+    Ok(())
+}
+
+/// Proxmox's `dns-name` format for VM names: dot-separated labels of ASCII
+/// letters, digits and dashes, each starting and ending with a letter or digit.
+/// Proxmox only checks it when the VM is created, after the download.
+fn validate_vm_name(name: &str) -> Result<()> {
+    let valid = name.split('.').all(|label| {
+        !label.is_empty()
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    });
+    if !valid {
+        return Err(Error::ProxmoxActionRequired(crate::message!(
+            "backend.proxmox.invalid_vm_name"
         )));
     }
     Ok(())
@@ -125,25 +145,21 @@ async fn complete_second_factor(
         .and_then(|encoded| urlencoding::decode(encoded).ok())
         .and_then(|decoded| serde_json::from_str::<serde_json::Value>(&decoded).ok());
     if challenge.as_ref().and_then(|value| value["totp"].as_bool()) != Some(true) {
-        return Err(Error::ProxmoxTwoFactor(
-            "This account requires a second factor, but Proxmox did not offer TOTP. \
-             This installer supports authenticator app (TOTP) codes only; \
-             WebAuthn, security keys, Yubico OTP, and recovery codes are not supported."
-                .to_string(),
-        ));
+        return Err(Error::ProxmoxTwoFactor(crate::message!(
+            "backend.proxmox.two_factor_totp_unavailable"
+        )));
     }
 
     let code = credentials.totp.as_deref().unwrap_or_default().trim();
     if code.is_empty() {
-        return Err(Error::ProxmoxTwoFactor(
-            "This account requires an authenticator app code. Enter the current code and try again."
-                .to_string(),
-        ));
+        return Err(Error::ProxmoxTwoFactor(crate::message!(
+            "backend.proxmox.two_factor_code_required"
+        )));
     }
     if !(2..=16).contains(&code.len()) || !code.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(Error::ProxmoxTwoFactor(
-            "Enter a valid numeric authenticator app code.".to_string(),
-        ));
+        return Err(Error::ProxmoxTwoFactor(crate::message!(
+            "backend.proxmox.two_factor_code_invalid"
+        )));
     }
 
     let password = format!("totp:{code}");
@@ -158,38 +174,37 @@ async fn complete_second_factor(
         .await
         .map_err(|error| {
             tls::certificate_error(&error).unwrap_or_else(|| {
-                Error::ProxmoxTwoFactor(
-                    "Could not complete the second-factor request. Check your connection and try again."
-                        .to_string(),
-                )
+                Error::ProxmoxTwoFactor(crate::message!(
+                    "backend.proxmox.two_factor_request_failed"
+                ))
             })
         })?;
     if !response.status().is_success() {
         if response.status().as_u16() != 401 {
-            return Err(Error::ProxmoxTwoFactor(format!(
-                "Proxmox returned HTTP {} while completing the second-factor login. \
-                 Check the server and try again.",
-                response.status()
+            return Err(Error::ProxmoxTwoFactor(crate::message!(
+                "backend.proxmox.two_factor_http_error",
+                status = response.status().as_u16(),
             )));
         }
-        return Err(Error::ProxmoxTwoFactor(
-            "Proxmox rejected the second-factor login. Check your current authenticator app code \
-             and try again. If it still fails, check the account in Proxmox."
-                .to_string(),
-        ));
+        return Err(Error::ProxmoxTwoFactor(crate::message!(
+            "backend.proxmox.two_factor_rejected"
+        )));
     }
 
     let response: serde_json::Value = response.json().await.map_err(|_| {
-        Error::ProxmoxTwoFactor("Invalid second-factor response from Proxmox.".to_string())
+        Error::ProxmoxTwoFactor(crate::message!(
+            "backend.proxmox.two_factor_invalid_response"
+        ))
     })?;
     let data = response.get("data").ok_or_else(|| {
-        Error::ProxmoxTwoFactor("Missing second-factor response from Proxmox.".to_string())
+        Error::ProxmoxTwoFactor(crate::message!(
+            "backend.proxmox.two_factor_missing_response"
+        ))
     })?;
     if needs_second_factor(data) {
-        return Err(Error::ProxmoxTwoFactor(
-            "The second-factor login is incomplete. Enter a current authenticator app code and try again."
-                .to_string(),
-        ));
+        return Err(Error::ProxmoxTwoFactor(crate::message!(
+            "backend.proxmox.two_factor_incomplete"
+        )));
     }
     Ok(data.clone())
 }
@@ -395,8 +410,10 @@ async fn list_nodes(session: &ProxmoxSession) -> Result<Vec<ProxmoxNode>> {
                     .unwrap_or("unknown")
                     .to_string(),
                 cpu_usage: node.get("cpu").and_then(|v| v.as_f64()),
-                memory_used: node.get("mem").and_then(|v| v.as_u64()),
-                memory_total: node.get("maxmem").and_then(|v| v.as_u64()),
+                cpu_count: node
+                    .get("maxcpu")
+                    .and_then(|v| v.as_u64())
+                    .and_then(|v| u32::try_from(v).ok()),
             })
         })
         .collect();
@@ -501,14 +518,17 @@ async fn ensure_bridge_available(
             "backend.proxmox.vlan_tag_out_of_range"
         )));
     }
-    if !valid_bridge_name(&config.bridge) {
-        return Err(Error::ProxmoxApi(
-            "Select a valid network bridge before continuing.".to_string(),
-        ));
-    }
-    list_bridges(session, &config.node).await?.into_iter()
+    list_bridges(session, &config.node)
+        .await?
+        .into_iter()
         .find(|bridge| bridge.name == config.bridge)
-        .ok_or_else(|| Error::ProxmoxApi(format!("Network bridge '{}' is no longer available on node '{}'. Return to configuration and select a network bridge.", config.bridge, config.node)))
+        .ok_or_else(|| {
+            Error::ProxmoxActionRequired(crate::message!(
+                "backend.proxmox.bridge_unavailable",
+                bridge = config.bridge,
+                node = config.node,
+            ))
+        })
 }
 
 /// List available storage on a node
@@ -565,7 +585,6 @@ async fn list_storage(session: &ProxmoxSession, node: &str) -> Result<Vec<Proxmo
                     .to_string(),
                 content,
                 available: s.get("avail").and_then(|v| v.as_u64()).unwrap_or(0),
-                total: s.get("total").and_then(|v| v.as_u64()).unwrap_or(0),
                 active: s.get("active").and_then(|v| v.as_u64()).unwrap_or(0) == 1,
             })
         })
@@ -820,6 +839,11 @@ async fn ensure_vm_id_free(session: &ProxmoxSession, vm_id: u32) -> Result<()> {
         return Ok(());
     }
 
+    // Also runs right before the upload, after a download that can outlast the ticket
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(Error::ProxmoxSessionExpired);
+    }
+
     if status != reqwest::StatusCode::BAD_REQUEST {
         return Err(Error::ProxmoxApi(format!(
             "Failed to check VM ID: {}",
@@ -874,7 +898,24 @@ fn check_node_online(nodes: &[ProxmoxNode], node: &str) -> Result<()> {
     Ok(())
 }
 
-/// Privileges Proxmox checks on `/vms/{id}` for the options `create_vm_with_disk` sends.
+/// Proxmox creates a VM with more cores than its node has, but then refuses
+/// to start it, after the download and the import.
+fn check_node_cores(nodes: &[ProxmoxNode], node: &str, cores: u32) -> Result<()> {
+    let cpus = nodes
+        .iter()
+        .find(|n| n.name == node)
+        .and_then(|n| n.cpu_count);
+    match cpus {
+        Some(cpus) if cores > cpus => Err(Error::ProxmoxActionRequired(crate::message!(
+            "backend.proxmox.too_many_cores",
+            node = node,
+            cpus = cpus,
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// Privileges Proxmox checks on `/vms/{id}` to create the VM as `create_vm_with_disk` does and start it.
 const VM_CREATE_PRIVILEGES: &[&str] = &[
     "VM.Allocate",
     "VM.Config.CPU",
@@ -883,6 +924,7 @@ const VM_CREATE_PRIVILEGES: &[&str] = &[
     "VM.Config.HWType",
     "VM.Config.Network",
     "VM.Config.Disk",
+    "VM.PowerMgmt",
 ];
 
 /// Privileges the logged-in user has on `path`, including inherited ones.
@@ -901,6 +943,10 @@ async fn fetch_privileges(session: &ProxmoxSession, path: &str) -> Result<HashSe
         .send()
         .await
         .map_err(|e| request_error(e, "Failed to check permissions"))?;
+
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(Error::ProxmoxSessionExpired);
+    }
 
     if !response.status().is_success() {
         return Err(Error::ProxmoxApi(format!(
@@ -947,14 +993,10 @@ async fn ensure_user_can_create_vm(
     config: &ProxmoxVmConfig,
 ) -> Result<()> {
     let vm_path = format!("/vms/{}", config.vm_id);
-    let mut required = VM_CREATE_PRIVILEGES.to_vec();
-    if config.auto_start {
-        required.push("VM.PowerMgmt");
-    }
     ensure_privileges(
         &fetch_privileges(session, &vm_path).await?,
         &vm_path,
-        &required,
+        VM_CREATE_PRIVILEGES,
     )?;
 
     ensure_bridge_access(session, config).await
@@ -983,8 +1025,14 @@ async fn ensure_bridge_access(session: &ProxmoxSession, config: &ProxmoxVmConfig
             .send()
             .await
             .map_err(|e| request_error(e, "Failed to check SDN VNet configuration"))?;
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(Error::ProxmoxSessionExpired);
+        }
         if response.status() == reqwest::StatusCode::FORBIDDEN {
-            return Err(Error::ProxmoxApi(format!("Cannot read SDN VNet '{}'. Grant SDN.Audit on this VNet so its network permissions can be checked.", bridge.name)));
+            return Err(Error::ProxmoxActionRequired(crate::message!(
+                "backend.proxmox.missing_sdn_audit",
+                vnet = bridge.name,
+            )));
         }
         if !response.status().is_success() {
             return Err(Error::ProxmoxApi(format!(
@@ -1032,6 +1080,7 @@ async fn pre_install_checks(
 ) -> Result<()> {
     let nodes = list_nodes(session).await?;
     check_node_online(&nodes, &config.node)?;
+    check_node_cores(&nodes, &config.node, config.cpu_cores)?;
 
     ensure_user_can_create_vm(session, config).await?;
 
@@ -1061,6 +1110,7 @@ async fn check_install<B: ReleaseSource>(
     config: &ProxmoxVmConfig,
 ) -> Result<HaosImage> {
     validate_disk_size(config.disk_size_gb)?;
+    validate_vm_name(&config.name)?;
 
     let release: HaosRelease = backend.get_latest_haos_release_for_board("ova").await?;
     let image = release
@@ -1142,6 +1192,79 @@ fn task_node(upid: &str) -> Option<&str> {
         .filter(|node| !node.is_empty())
 }
 
+/// How long to wait between two task status checks. Tests poll mock
+/// servers, which answer right away.
+const TASK_POLL_INTERVAL: std::time::Duration = if cfg!(test) {
+    std::time::Duration::from_millis(10)
+} else {
+    std::time::Duration::from_secs(2)
+};
+
+/// Failed task status checks in a row before giving up on a task.
+const MAX_TASK_POLL_FAILURES: u32 = 3;
+
+/// One task status check.
+enum TaskPoll {
+    Status(serde_json::Value),
+    /// A failure that asking again can fix
+    Retry(Error),
+}
+
+/// Check a task's status once. The body is read in here too: headers can
+/// arrive and the connection still drop before the body does, which is the
+/// same hiccup as a failed request.
+async fn poll_task_status(client: &reqwest::Client, url: &str, ticket: &str) -> Result<TaskPoll> {
+    let response = match client
+        .get(url)
+        .header("Cookie", format!("PVEAuthCookie={}", ticket))
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            return match request_error(error, "Failed to check task status") {
+                // A changed certificate doesn't change back by asking again.
+                Error::ProxmoxCertificateChanged => Err(Error::ProxmoxCertificateChanged),
+                error => Ok(TaskPoll::Retry(error)),
+            };
+        }
+    };
+
+    let status = response.status();
+    // A busy API (5xx) may answer next time, a rejection won't change.
+    let retryable = status.is_success() || status.is_server_error();
+    let body = match response.text().await {
+        Ok(body) => body,
+        Err(error) if retryable => {
+            return Ok(TaskPoll::Retry(request_error(
+                error,
+                "Failed to read task status",
+            )));
+        }
+        // Still a rejection when its explanation got lost on the way
+        Err(_) => String::new(),
+    };
+
+    if !status.is_success() {
+        // Proxmox explains a 400 in the body ("no such task", a parameter
+        // that failed verification); the status line alone hides it.
+        let error = Error::ProxmoxApi(format!(
+            "Failed to check task status ({}): {}",
+            status,
+            body.trim()
+        ));
+        return if retryable {
+            Ok(TaskPoll::Retry(error))
+        } else {
+            Err(error)
+        };
+    }
+
+    serde_json::from_str(&body)
+        .map(TaskPoll::Status)
+        .map_err(|e| Error::ProxmoxApi(format!("Failed to parse task status: {}", e)))
+}
+
 /// Wait for a Proxmox task to complete.
 async fn wait_for_task(
     session: &ProxmoxSession,
@@ -1168,6 +1291,7 @@ async fn wait_for_task_completion(
     let client = create_client(session, 30)?;
     let start = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(timeout_secs);
+    let mut failed_polls = 0;
 
     loop {
         if start.elapsed() > timeout {
@@ -1177,29 +1301,25 @@ async fn wait_for_task_completion(
             )));
         }
 
-        let response = client
-            .get(&url)
-            .header("Cookie", format!("PVEAuthCookie={}", session.ticket))
-            .send()
-            .await
-            .map_err(|e| request_error(e, "Failed to check task status"))?;
+        // The task keeps running on Proxmox whatever happens to one status
+        // check. Giving up on a single network hiccup or a busy API (5xx)
+        // leaves a VM behind that is never resized or started.
+        let json = match poll_task_status(&client, &url, &session.ticket).await? {
+            TaskPoll::Status(json) => json,
+            TaskPoll::Retry(error) => {
+                failed_polls += 1;
+                if failed_polls >= MAX_TASK_POLL_FAILURES {
+                    return Err(error);
+                }
 
-        let status = response.status();
-        if !status.is_success() {
-            // Proxmox explains a 400 in the body ("no such task", a parameter
-            // that failed verification); the status line alone hides it.
-            let body = response.text().await.unwrap_or_default();
-            return Err(Error::ProxmoxApi(format!(
-                "Failed to check task status ({}): {}",
-                status,
-                body.trim()
-            )));
-        }
-
-        let json: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| Error::ProxmoxApi(format!("Failed to parse task status: {}", e)))?;
+                eprintln!(
+                    "Task status check {failed_polls} of {MAX_TASK_POLL_FAILURES} failed, trying again: {error}"
+                );
+                tokio::time::sleep(TASK_POLL_INTERVAL).await;
+                continue;
+            }
+        };
+        failed_polls = 0;
 
         let data = json
             .get("data")
@@ -1216,16 +1336,23 @@ async fn wait_for_task_completion(
                 .unwrap_or("");
             if exitstatus == "OK" {
                 return Ok(());
-            } else {
-                return Err(Error::ProxmoxApi(format!(
-                    "Task failed with status: {}",
-                    exitstatus
-                )));
             }
+
+            // Proxmox ends a task that logged warnings with "WARNINGS: <count>"
+            // and shows it as succeeded, so the work is done.
+            if exitstatus.starts_with("WARNINGS: ") {
+                eprintln!("Proxmox task {upid} finished with {exitstatus}");
+                return Ok(());
+            }
+
+            return Err(Error::ProxmoxApi(format!(
+                "Task failed with status: {}",
+                exitstatus
+            )));
         }
 
         // Task still running, wait a bit before checking again
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        tokio::time::sleep(TASK_POLL_INTERVAL).await;
     }
 }
 
@@ -1376,6 +1503,10 @@ async fn upload_image_to_proxmox<P: ProgressCallback>(
     let status = response.status();
     let response_text = response.text().await.unwrap_or_default();
 
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(Error::ProxmoxSessionExpired);
+    }
+
     if !status.is_success() {
         return Err(Error::ProxmoxApi(format!(
             "Failed to upload image to Proxmox ({}): {}",
@@ -1483,6 +1614,10 @@ async fn create_vm_with_disk(
         // A client rejection cannot have started an import. Server errors or
         // a timeout can hide a task which is still running, so retain those.
         *source_unused = status.is_client_error() && status != reqwest::StatusCode::REQUEST_TIMEOUT;
+        // Still a client rejection, so the flag above stays set
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(Error::ProxmoxSessionExpired);
+        }
         return Err(Error::ProxmoxApi(format!(
             "Failed to create VM ({}): {}",
             status, response_text
@@ -1545,6 +1680,9 @@ async fn resize_vm_disk(session: &ProxmoxSession, config: &ProxmoxVmConfig) -> R
 
     let status = response.status();
     let response_text = response.text().await.unwrap_or_default();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(Error::ProxmoxSessionExpired);
+    }
     if !status.is_success() {
         return Err(Error::ProxmoxApi(format!(
             "Failed to resize VM disk ({}): {}",
@@ -1583,6 +1721,9 @@ async fn delete_import_image(
         .send()
         .await
         .map_err(|e| request_error(e, "Could not delete import volume"))?;
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(Error::ProxmoxSessionExpired);
+    }
     if !response.status().is_success() {
         return Err(Error::ProxmoxApi(format!(
             "Could not delete import volume {volume}: HTTP {}",
@@ -1647,6 +1788,10 @@ async fn start_vm(session: &ProxmoxSession, node: &str, vm_id: u32) -> Result<()
 
     let status = response.status();
     let response_text = response.text().await.unwrap_or_default();
+
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(Error::ProxmoxSessionExpired);
+    }
 
     if !status.is_success() {
         return Err(Error::ProxmoxApi(format!(
@@ -1905,18 +2050,15 @@ async fn create_vm<B: ReleaseSource, P: ProgressCallback>(
 
     import_and_cleanup_image(session, config, &image_filename, &storage_name).await?;
 
-    // Step 6: Start the VM if requested
-    if config.auto_start {
-        progress_callback.on_progress(FlashProgress {
-            stage: FlashStage::StartingVm,
-            progress: 0,
-            bytes_processed: 0,
-            total_bytes: 0,
-            message: "Starting virtual machine...".to_string(),
-        });
-
-        start_vm(session, &config.node, config.vm_id).await?;
-    }
+    // Step 6: Start the VM
+    progress_callback.on_progress(FlashProgress {
+        stage: FlashStage::StartingVm,
+        progress: 0,
+        bytes_processed: 0,
+        total_bytes: 0,
+        message: "Starting virtual machine...".to_string(),
+    });
+    start_vm(session, &config.node, config.vm_id).await?;
 
     Ok(ProxmoxVmResult {
         vm_id: config.vm_id,
@@ -2101,8 +2243,7 @@ mod tests {
             name: "pve".to_string(),
             status: "online".to_string(),
             cpu_usage: Some(0.5),
-            memory_used: Some(4_000_000_000),
-            memory_total: Some(8_000_000_000),
+            cpu_count: Some(4),
         };
         assert_eq!(node.name, "pve");
         assert_eq!(node.status, "online");
@@ -2115,7 +2256,6 @@ mod tests {
             storage_type: "dir".to_string(),
             content: vec!["images".to_string()],
             available: 100_000_000_000,
-            total: 500_000_000_000,
             active: true,
         };
         assert_eq!(storage.name, "local");
@@ -2128,7 +2268,6 @@ mod tests {
             storage_type: "dir".to_string(),
             content: content.iter().map(|c| c.to_string()).collect(),
             available: 100_000_000_000,
-            total: 500_000_000_000,
             active,
         }
     }
@@ -2300,8 +2439,51 @@ mod tests {
             name: name.to_string(),
             status: status.to_string(),
             cpu_usage: None,
-            memory_used: None,
-            memory_total: None,
+            cpu_count: None,
+        }
+    }
+
+    #[test]
+    fn test_check_node_cores_against_the_node_cpus() {
+        let nodes = vec![
+            ProxmoxNode {
+                cpu_count: Some(4),
+                ..node("pve", "online")
+            },
+            node("unknown", "online"),
+        ];
+        assert!(check_node_cores(&nodes, "pve", 4).is_ok());
+        match check_node_cores(&nodes, "pve", 6) {
+            Err(Error::ProxmoxActionRequired(msg)) => {
+                assert_eq!(msg.key, "backend.proxmox.too_many_cores");
+                assert!(msg.to_string().contains("CPU count (4)"), "{}", msg);
+            }
+            other => panic!("Expected too-many-cores error, got {:?}", other),
+        }
+        // Without a CPU count only Proxmox can tell
+        assert!(check_node_cores(&nodes, "unknown", 16).is_ok());
+    }
+
+    #[test]
+    fn test_vm_names_follow_the_proxmox_dns_name_format() {
+        for name in ["homeassistant", "home-assistant", "ha.lan", "HA-2", "a"] {
+            assert!(validate_vm_name(name).is_ok(), "{name}");
+        }
+        for name in [
+            "",
+            "home_assistant",
+            "home assistant",
+            "-ha",
+            "ha-",
+            "ha.",
+            ".ha",
+            "ha..lan",
+            "ha.-lan",
+        ] {
+            assert!(
+                matches!(validate_vm_name(name), Err(Error::ProxmoxActionRequired(_))),
+                "{name}"
+            );
         }
     }
 
@@ -2732,6 +2914,7 @@ mod tests {
                                 "node": "pve",
                                 "status": "online",
                                 "cpu": 0.15,
+                                "maxcpu": 4,
                                 "mem": 4000000000,
                                 "maxmem": 16000000000
                             },
@@ -2762,7 +2945,10 @@ mod tests {
             assert_eq!(nodes.len(), 2);
             assert_eq!(nodes[0].name, "pve");
             assert_eq!(nodes[0].status, "online");
+            assert_eq!(nodes[0].cpu_count, Some(4));
             assert_eq!(nodes[1].name, "pve2");
+            // Proxmox leaves out the stats for users without Sys.Audit
+            assert_eq!(nodes[1].cpu_count, None);
 
             nodes_mock.assert_async().await;
         }
@@ -2823,6 +3009,39 @@ mod tests {
             ));
             storage_mock.assert_async().await;
             vm_id_mock.assert_async().await;
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn test_vm_id_and_privilege_checks_auth_expired() {
+            let mut server = Server::new_async().await;
+            let vm_id_mock = server
+                .mock("GET", "/api2/json/cluster/nextid")
+                .match_query(Matcher::UrlEncoded("vmid".to_string(), "100".to_string()))
+                .with_status(401)
+                .create_async()
+                .await;
+            let permissions_mock = server
+                .mock("GET", "/api2/json/access/permissions")
+                .match_query(Matcher::UrlEncoded(
+                    "path".to_string(),
+                    "/vms/100".to_string(),
+                ))
+                .with_status(401)
+                .create_async()
+                .await;
+            let session = test_session(&server);
+
+            assert!(matches!(
+                ensure_vm_id_free(&session, 100).await,
+                Err(Error::ProxmoxSessionExpired)
+            ));
+            assert!(matches!(
+                fetch_privileges(&session, "/vms/100").await,
+                Err(Error::ProxmoxSessionExpired)
+            ));
+            vm_id_mock.assert_async().await;
+            permissions_mock.assert_async().await;
         }
 
         #[tokio::test]
@@ -3011,7 +3230,7 @@ mod tests {
             }
         }
 
-        fn vm_config(auto_start: bool) -> ProxmoxVmConfig {
+        fn vm_config() -> ProxmoxVmConfig {
             ProxmoxVmConfig {
                 vm_id: 100,
                 name: "homeassistant".to_string(),
@@ -3022,7 +3241,6 @@ mod tests {
                 cpu_cores: 2,
                 memory_mb: 4096,
                 disk_size_gb: 32,
-                auto_start,
             }
         }
 
@@ -3079,12 +3297,19 @@ mod tests {
                 .await
                 .unwrap()
                 .is_empty());
-            assert!(
-                ensure_bridge_available(&test_session(&server), &vm_config(false))
-                    .await
-                    .unwrap_err()
-                    .to_string()
-                    .contains("no longer available")
+            let error = ensure_bridge_available(&test_session(&server), &vm_config())
+                .await
+                .unwrap_err();
+            let Error::ProxmoxActionRequired(message) = error else {
+                panic!("{error:?}");
+            };
+            assert_eq!(
+                message,
+                crate::message!(
+                    "backend.proxmox.bridge_unavailable",
+                    bridge = "vmbr0",
+                    node = "pve",
+                )
             );
             network.expect(2).assert_async().await;
         }
@@ -3125,7 +3350,8 @@ mod tests {
 
         #[tokio::test]
         async fn test_bridge_validation_rejects_net0_and_path_injection_before_create() {
-            let server = Server::new_async().await;
+            let mut server = Server::new_async().await;
+            mock_default_bridge(&mut server).await;
             for name in [
                 "",
                 "vmbr0,tag=10",
@@ -3135,7 +3361,7 @@ mod tests {
                 "vmbr0&firewall=0",
                 "vmbr0/100",
             ] {
-                let mut config = vm_config(false);
+                let mut config = vm_config();
                 config.bridge = name.to_string();
                 let error = create_vm_with_disk(
                     &test_session(&server),
@@ -3146,9 +3372,16 @@ mod tests {
                 )
                 .await
                 .unwrap_err();
-                assert!(
-                    error.to_string().contains("valid network bridge"),
-                    "{error}"
+                let Error::ProxmoxActionRequired(message) = error else {
+                    panic!("{error:?}");
+                };
+                assert_eq!(
+                    message,
+                    crate::message!(
+                        "backend.proxmox.bridge_unavailable",
+                        bridge = name,
+                        node = "pve",
+                    )
                 );
             }
         }
@@ -3163,7 +3396,7 @@ mod tests {
             .await;
             let permissions =
                 mock_privileges(&mut server, "/sdn/zones/localnetwork/vmbr1", &["SDN.Use"]).await;
-            let mut config = vm_config(false);
+            let mut config = vm_config();
             config.bridge = "vmbr1".to_string();
             ensure_bridge_access(&test_session(&server), &config)
                 .await
@@ -3245,7 +3478,7 @@ mod tests {
                     &["SDN.Use"],
                 )
                 .await;
-                let mut config = vm_config(false);
+                let mut config = vm_config();
                 config.vlan_tag = Some(42);
                 let result = ensure_bridge_access(&test_session(&server), &config).await;
                 assert_eq!(result.is_ok(), supported, "{result:?}");
@@ -3275,7 +3508,7 @@ mod tests {
                     .expect(0)
                     .create_async()
                     .await;
-                let mut config = vm_config(false);
+                let mut config = vm_config();
                 config.vlan_tag = Some(tag);
                 let mut source_unused = false;
                 let error = create_vm_with_disk(
@@ -3303,7 +3536,7 @@ mod tests {
                 .expect(0)
                 .create_async()
                 .await;
-            let mut config = vm_config(false);
+            let mut config = vm_config();
             config.vlan_tag = Some(42);
             let mut source_unused = false;
             let error = create_vm_with_disk(
@@ -3364,7 +3597,7 @@ mod tests {
                         .expect(usize::from(allowed))
                         .create_async()
                         .await;
-                    let mut config = vm_config(false);
+                    let mut config = vm_config();
                     config.vlan_tag = Some(tag);
                     let result = create_vm_with_disk(
                         &test_session(&server),
@@ -3390,7 +3623,7 @@ mod tests {
 
         #[test]
         fn test_vlan_deserialization_rejects_non_integer_tags() {
-            let mut config = serde_json::to_value(vm_config(false)).unwrap();
+            let mut config = serde_json::to_value(vm_config()).unwrap();
             config.as_object_mut().unwrap().remove("vlan_tag");
             assert!(serde_json::from_value::<ProxmoxVmConfig>(config.clone())
                 .unwrap()
@@ -3432,7 +3665,7 @@ mod tests {
                     .await;
                 let permissions =
                     mock_privileges(&mut server, "/sdn/zones/home/lan", &privileges).await;
-                let mut config = vm_config(false);
+                let mut config = vm_config();
                 config.bridge = "lan".to_string();
                 let result = ensure_bridge_access(&test_session(&server), &config).await;
                 assert_eq!(result.is_ok(), privileges.contains(&"SDN.Use"));
@@ -3458,12 +3691,24 @@ mod tests {
                     .with_status(status)
                     .create_async()
                     .await;
-                let mut config = vm_config(false);
+                let mut config = vm_config();
                 config.bridge = "lan".to_string();
                 let error = ensure_bridge_access(&test_session(&server), &config)
                     .await
                     .unwrap_err();
-                assert!(matches!(error, Error::ProxmoxApi(_)));
+                match status {
+                    401 => assert!(matches!(error, Error::ProxmoxSessionExpired)),
+                    403 => {
+                        let Error::ProxmoxActionRequired(message) = error else {
+                            panic!("{error:?}");
+                        };
+                        assert_eq!(
+                            message,
+                            crate::message!("backend.proxmox.missing_sdn_audit", vnet = "lan")
+                        );
+                    }
+                    _ => assert!(matches!(error, Error::ProxmoxApi(_))),
+                }
                 network.assert_async().await;
                 vnet.assert_async().await;
             }
@@ -3491,7 +3736,7 @@ mod tests {
                     .with_body(serde_json::json!({"data":{"zone":zone}}).to_string())
                     .create_async()
                     .await;
-                let mut config = vm_config(false);
+                let mut config = vm_config();
                 config.bridge = "lan".to_string();
                 let error = create_vm_with_disk(
                     &test_session(&server),
@@ -3807,13 +4052,11 @@ mod tests {
             let mut server = Server::new_async().await;
             let _network = mock_default_bridge(&mut server).await;
 
-            let mut vm_privileges = VM_CREATE_PRIVILEGES.to_vec();
-            vm_privileges.push("VM.PowerMgmt");
-            let vm_mock = mock_privileges(&mut server, "/vms/100", &vm_privileges).await;
+            let vm_mock = mock_privileges(&mut server, "/vms/100", VM_CREATE_PRIVILEGES).await;
             let bridge_mock =
                 mock_privileges(&mut server, "/sdn/zones/localnetwork/vmbr0", &["SDN.Use"]).await;
 
-            let result = ensure_user_can_create_vm(&test_session(&server), &vm_config(true)).await;
+            let result = ensure_user_can_create_vm(&test_session(&server), &vm_config()).await;
             assert!(result.is_ok(), "unexpected error: {:?}", result.err());
 
             vm_mock.assert_async().await;
@@ -3828,7 +4071,7 @@ mod tests {
             // A read-only user can log in fine but only has audit rights.
             let vm_mock = mock_privileges(&mut server, "/vms/100", &["VM.Audit"]).await;
 
-            match ensure_user_can_create_vm(&test_session(&server), &vm_config(true)).await {
+            match ensure_user_can_create_vm(&test_session(&server), &vm_config()).await {
                 Err(Error::ProxmoxActionRequired(msg)) => {
                     assert!(msg.to_string().contains("VM.Allocate"), "{}", msg);
                     assert!(msg.to_string().contains("VM.PowerMgmt"), "{}", msg);
@@ -3842,23 +4085,6 @@ mod tests {
 
         #[tokio::test]
         #[serial]
-        async fn test_ensure_user_can_create_vm_needs_power_only_for_auto_start() {
-            let mut server = Server::new_async().await;
-            let _network = mock_default_bridge(&mut server).await;
-
-            let vm_mock = mock_privileges(&mut server, "/vms/100", VM_CREATE_PRIVILEGES).await;
-            let bridge_mock =
-                mock_privileges(&mut server, "/sdn/zones/localnetwork/vmbr0", &["SDN.Use"]).await;
-
-            let result = ensure_user_can_create_vm(&test_session(&server), &vm_config(false)).await;
-            assert!(result.is_ok(), "unexpected error: {:?}", result.err());
-
-            vm_mock.assert_async().await;
-            bridge_mock.assert_async().await;
-        }
-
-        #[tokio::test]
-        #[serial]
         async fn test_ensure_user_can_create_vm_needs_bridge_access() {
             let mut server = Server::new_async().await;
             let _network = mock_default_bridge(&mut server).await;
@@ -3867,7 +4093,7 @@ mod tests {
             let bridge_mock =
                 mock_privileges(&mut server, "/sdn/zones/localnetwork/vmbr0", &[]).await;
 
-            match ensure_user_can_create_vm(&test_session(&server), &vm_config(false)).await {
+            match ensure_user_can_create_vm(&test_session(&server), &vm_config()).await {
                 Err(Error::ProxmoxActionRequired(msg)) => {
                     assert!(msg.to_string().contains("SDN.Use"), "{}", msg);
                     assert!(msg.to_string().contains("vmbr0"), "{}", msg);
@@ -4025,10 +4251,8 @@ mod tests {
                 .create_async()
                 .await;
 
-            let mut vm_privileges = VM_CREATE_PRIVILEGES.to_vec();
-            vm_privileges.push("VM.PowerMgmt");
             let permission_mocks = vec![
-                mock_privileges(&mut server, "/vms/100", &vm_privileges).await,
+                mock_privileges(&mut server, "/vms/100", VM_CREATE_PRIVILEGES).await,
                 mock_privileges(&mut server, "/sdn/zones/localnetwork/vmbr0", &["SDN.Use"]).await,
                 mock_privileges(
                     &mut server,
@@ -4080,7 +4304,6 @@ mod tests {
                 cpu_cores: 2,
                 memory_mb: 4096,
                 disk_size_gb: 32,
-                auto_start: true,
             };
 
             let result = create_vm(
@@ -4137,7 +4360,6 @@ mod tests {
                 cpu_cores: 2,
                 memory_mb: 4096,
                 disk_size_gb: 32,
-                auto_start: true,
             };
 
             match pre_install_checks(&test_session(&server), &config, 400_000_000).await {
@@ -4209,7 +4431,7 @@ mod tests {
                 }],
             });
 
-            let result = check_install(&release, &test_session(&server), &vm_config(true)).await;
+            let result = check_install(&release, &test_session(&server), &vm_config()).await;
             assert!(
                 matches!(&result, Err(Error::ProxmoxActionRequired(msg)) if msg.to_string().contains("offline")),
                 "unexpected result: {result:?}"
@@ -4638,12 +4860,14 @@ mod tests {
         async fn test_wait_for_task_http_error() {
             let mut server = Server::new_async().await;
 
+            // A server error is retried, but not forever.
             let task_mock = server
                 .mock(
                     "GET",
                     "/api2/json/nodes/pve/tasks/UPID%3Apve%3A00000001%3A00000002%3A00000003%3Atest%3Aroot%40pam%3A/status",
                 )
                 .with_status(500)
+                .expect(MAX_TASK_POLL_FAILURES as usize)
                 .create_async()
                 .await;
 
@@ -4718,7 +4942,8 @@ mod tests {
         async fn test_wait_for_task_error_includes_what_proxmox_said() {
             let mut server = Server::new_async().await;
 
-            let _task_mock = server
+            // Asking again won't make a task exist, so it isn't retried.
+            let task_mock = server
                 .mock(
                     "GET",
                     "/api2/json/nodes/pve/tasks/UPID%3Apve%3A00000001%3A00000002%3A00000003%3Atest%3Aroot%40pam%3A/status",
@@ -4726,6 +4951,7 @@ mod tests {
                 .with_status(400)
                 .with_header("content-type", "application/json")
                 .with_body(r#"{"errors":{"upid":"no such task"},"data":null}"#)
+                .expect(1)
                 .create_async()
                 .await;
 
@@ -4751,6 +4977,323 @@ mod tests {
                 }
                 other => panic!("Expected ProxmoxApi error, got {other:?}"),
             }
+
+            task_mock.assert_async().await;
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn test_wait_for_task_client_errors_are_not_retried() {
+            for status in [401, 403, 404] {
+                let mut server = Server::new_async().await;
+                let task_mock = server
+                    .mock(
+                        "GET",
+                        "/api2/json/nodes/pve/tasks/UPID%3Apve%3A00000001%3A00000002%3A00000003%3Atest%3Aroot%40pam%3A/status",
+                    )
+                    .with_status(status)
+                    .expect(1)
+                    .create_async()
+                    .await;
+
+                let result = wait_for_task(
+                    &test_session(&server),
+                    "pve",
+                    "UPID:pve:00000001:00000002:00000003:test:root@pam:",
+                    10,
+                )
+                .await;
+                assert!(result.is_err(), "{status}");
+
+                task_mock.assert_async().await;
+            }
+        }
+
+        /// Proxmox shows a task that ended with warnings as succeeded.
+        #[tokio::test]
+        #[serial]
+        async fn test_wait_for_task_with_warnings_succeeds() {
+            let mut server = Server::new_async().await;
+            let task_mock = server
+                .mock(
+                    "GET",
+                    "/api2/json/nodes/pve/tasks/UPID%3Apve%3A00000001%3A00000002%3A00000003%3Atest%3Aroot%40pam%3A/status",
+                )
+                .with_body(r#"{"data":{"status":"stopped","exitstatus":"WARNINGS: 1"}}"#)
+                .create_async()
+                .await;
+
+            let mut stopped = false;
+            let result = wait_for_task_completion(
+                &test_session(&server),
+                "pve",
+                "UPID:pve:00000001:00000002:00000003:test:root@pam:",
+                10,
+                &mut stopped,
+            )
+            .await;
+            assert!(result.is_ok(), "{result:?}");
+            assert!(stopped);
+
+            task_mock.assert_async().await;
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn test_wait_for_task_survives_a_few_server_errors() {
+            let mut server = Server::new_async().await;
+
+            // mockito serves the first mock until its expected hits are used up.
+            let failing = server
+                .mock(
+                    "GET",
+                    "/api2/json/nodes/pve/tasks/UPID%3Apve%3A00000001%3A00000002%3A00000003%3Atest%3Aroot%40pam%3A/status",
+                )
+                .with_status(503)
+                .expect(MAX_TASK_POLL_FAILURES as usize - 1)
+                .create_async()
+                .await;
+            let done = server
+                .mock(
+                    "GET",
+                    "/api2/json/nodes/pve/tasks/UPID%3Apve%3A00000001%3A00000002%3A00000003%3Atest%3Aroot%40pam%3A/status",
+                )
+                .with_body(r#"{"data":{"status":"stopped","exitstatus":"OK"}}"#)
+                .create_async()
+                .await;
+
+            let result = wait_for_task(
+                &test_session(&server),
+                "pve",
+                "UPID:pve:00000001:00000002:00000003:test:root@pam:",
+                10,
+            )
+            .await;
+            assert!(result.is_ok(), "{result:?}");
+
+            failing.assert_async().await;
+            done.assert_async().await;
+        }
+
+        /// Failures only count while they're in a row; a good poll in
+        /// between starts the count over.
+        #[tokio::test]
+        #[serial]
+        async fn test_wait_for_task_resets_failures_after_a_good_poll() {
+            let mut server = Server::new_async().await;
+            let path = "/api2/json/nodes/pve/tasks/UPID%3Apve%3A00000001%3A00000002%3A00000003%3Atest%3Aroot%40pam%3A/status";
+            let below_limit = MAX_TASK_POLL_FAILURES as usize - 1;
+
+            let first_failures = server
+                .mock("GET", path)
+                .with_status(500)
+                .expect(below_limit)
+                .create_async()
+                .await;
+            let running = server
+                .mock("GET", path)
+                .with_body(r#"{"data":{"status":"running"}}"#)
+                .expect(1)
+                .create_async()
+                .await;
+            let second_failures = server
+                .mock("GET", path)
+                .with_status(500)
+                .expect(below_limit)
+                .create_async()
+                .await;
+            let done = server
+                .mock("GET", path)
+                .with_body(r#"{"data":{"status":"stopped","exitstatus":"OK"}}"#)
+                .create_async()
+                .await;
+
+            let result = wait_for_task(
+                &test_session(&server),
+                "pve",
+                "UPID:pve:00000001:00000002:00000003:test:root@pam:",
+                10,
+            )
+            .await;
+            assert!(result.is_ok(), "{result:?}");
+
+            first_failures.assert_async().await;
+            running.assert_async().await;
+            second_failures.assert_async().await;
+            done.assert_async().await;
+        }
+
+        /// A dropped connection is a network error, the same path a request
+        /// timeout takes, without waiting 30 seconds for one.
+        #[tokio::test]
+        #[serial]
+        async fn test_wait_for_task_survives_a_dropped_connection() {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (dropped, _) = listener.accept().await.unwrap();
+                drop(dropped);
+
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4096];
+                let _ = stream.read(&mut request).await.unwrap();
+                let body = r#"{"data":{"status":"stopped","exitstatus":"OK"}}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            });
+
+            let session = ProxmoxSession {
+                certificate_sha256: None,
+                server_url: format!("http://{address}"),
+                ticket: "test-ticket".to_string(),
+                csrf_token: "test-csrf".to_string(),
+            };
+            let result = wait_for_task(
+                &session,
+                "pve",
+                "UPID:pve:00000001:00000002:00000003:test:root@pam:",
+                10,
+            )
+            .await;
+            assert!(result.is_ok(), "{result:?}");
+
+            server.await.unwrap();
+        }
+
+        /// The headers can arrive and the connection still drop before the
+        /// whole body does. That is the same hiccup, so it is retried too.
+        #[tokio::test]
+        #[serial]
+        async fn test_wait_for_task_survives_a_cut_off_body() {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let body = r#"{"data":{"status":"stopped","exitstatus":"OK"}}"#;
+                let mut request = [0; 4096];
+
+                // Promises the whole body, sends half of it and hangs up
+                let (mut cut_off, _) = listener.accept().await.unwrap();
+                let _ = cut_off.read(&mut request).await.unwrap();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+                    body.len(),
+                    &body[..body.len() / 2]
+                );
+                cut_off.write_all(response.as_bytes()).await.unwrap();
+                drop(cut_off);
+
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let _ = stream.read(&mut request).await.unwrap();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            });
+
+            let session = ProxmoxSession {
+                certificate_sha256: None,
+                server_url: format!("http://{address}"),
+                ticket: "test-ticket".to_string(),
+                csrf_token: "test-csrf".to_string(),
+            };
+            let result = wait_for_task(
+                &session,
+                "pve",
+                "UPID:pve:00000001:00000002:00000003:test:root@pam:",
+                10,
+            )
+            .await;
+            assert!(result.is_ok(), "{result:?}");
+
+            server.await.unwrap();
+        }
+
+        /// A rejection stays a rejection when its body gets cut off, and the
+        /// error still names the status.
+        #[tokio::test]
+        #[serial]
+        async fn test_wait_for_task_cut_off_rejection_is_not_retried() {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let body = r#"{"errors":{"upid":"no such task"},"data":null}"#;
+                let mut request = [0; 4096];
+
+                let (mut cut_off, _) = listener.accept().await.unwrap();
+                let _ = cut_off.read(&mut request).await.unwrap();
+                let response = format!(
+                    "HTTP/1.1 404 Not Found\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+                    body.len(),
+                    &body[..body.len() / 2]
+                );
+                cut_off.write_all(response.as_bytes()).await.unwrap();
+                drop(cut_off);
+
+                // A retry would land here, and must not happen
+                tokio::time::timeout(std::time::Duration::from_millis(200), listener.accept())
+                    .await
+                    .is_err()
+            });
+
+            let session = ProxmoxSession {
+                certificate_sha256: None,
+                server_url: format!("http://{address}"),
+                ticket: "test-ticket".to_string(),
+                csrf_token: "test-csrf".to_string(),
+            };
+            let result = wait_for_task(
+                &session,
+                "pve",
+                "UPID:pve:00000001:00000002:00000003:test:root@pam:",
+                10,
+            )
+            .await;
+            assert!(
+                matches!(&result, Err(Error::ProxmoxApi(message)) if message.contains("404")),
+                "{result:?}"
+            );
+
+            assert!(server.await.unwrap(), "the rejection was retried");
+        }
+
+        /// A complete answer that isn't JSON won't parse the next time either.
+        #[tokio::test]
+        #[serial]
+        async fn test_wait_for_task_malformed_status_is_not_retried() {
+            let mut server = Server::new_async().await;
+            let task_mock = server
+                .mock(
+                    "GET",
+                    "/api2/json/nodes/pve/tasks/UPID%3Apve%3A00000001%3A00000002%3A00000003%3Atest%3Aroot%40pam%3A/status",
+                )
+                .with_body("not json")
+                .expect(1)
+                .create_async()
+                .await;
+
+            let result = wait_for_task(
+                &test_session(&server),
+                "pve",
+                "UPID:pve:00000001:00000002:00000003:test:root@pam:",
+                10,
+            )
+            .await;
+            assert!(
+                matches!(&result, Err(Error::ProxmoxApi(message)) if message.contains("Failed to parse task status")),
+                "{result:?}"
+            );
+
+            task_mock.assert_async().await;
         }
 
         #[tokio::test]
@@ -4860,7 +5403,6 @@ mod tests {
                 cpu_cores: 2,
                 memory_mb: 2048,
                 disk_size_gb,
-                auto_start: false,
             };
 
             let result = create_vm_with_disk(
@@ -4897,7 +5439,6 @@ mod tests {
                 cpu_cores: 2,
                 memory_mb: 2048,
                 disk_size_gb,
-                auto_start: true,
                 bridge: "vmbr0".into(),
                 vlan_tag: None,
             }
@@ -4913,16 +5454,24 @@ mod tests {
             };
             for size in [0, 1, 31] {
                 let config = disk_test_config(size);
-                let error = create_vm(&Backend, &session, &config, &crate::NoOpProgress)
-                    .await
-                    .unwrap_err();
-                assert!(error.to_string().contains("at least 32 GiB"));
                 // The check before confirming rejects it the same way
-                let error = Backend
-                    .check_vm_config(&session, &config)
-                    .await
-                    .unwrap_err();
-                assert!(error.to_string().contains("cannot shrink"));
+                for error in [
+                    create_vm(&Backend, &session, &config, &crate::NoOpProgress)
+                        .await
+                        .unwrap_err(),
+                    Backend
+                        .check_vm_config(&session, &config)
+                        .await
+                        .unwrap_err(),
+                ] {
+                    let Error::ProxmoxActionRequired(message) = error else {
+                        panic!("{error:?}");
+                    };
+                    assert_eq!(
+                        message,
+                        crate::message!("backend.proxmox.disk_too_small", size = 32)
+                    );
+                }
             }
         }
 
@@ -5120,7 +5669,6 @@ mod tests {
                 cpu_cores: 2,
                 memory_mb: 2048,
                 disk_size_gb: 32,
-                auto_start: false,
             };
 
             let result =
@@ -5128,6 +5676,35 @@ mod tests {
                     .await;
             assert!(result.is_err());
 
+            vm_create_mock.assert_async().await;
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn test_create_vm_with_disk_auth_expired_marks_source_unused() {
+            let mut server = Server::new_async().await;
+            let _network = mock_default_bridge(&mut server).await;
+            let _permissions =
+                mock_privileges(&mut server, "/sdn/zones/localnetwork/vmbr0", &["SDN.Use"]).await;
+            let vm_create_mock = server
+                .mock("POST", "/api2/json/nodes/pve/qemu")
+                .with_status(401)
+                .create_async()
+                .await;
+
+            let mut source_unused = false;
+            let result = create_vm_with_disk(
+                &test_session(&server),
+                &vm_config(),
+                "test-image.qcow2",
+                "local",
+                &mut source_unused,
+            )
+            .await;
+
+            assert!(matches!(result, Err(Error::ProxmoxSessionExpired)));
+            // Rejected before any import started, so the uploaded image can go
+            assert!(source_unused);
             vm_create_mock.assert_async().await;
         }
 
@@ -5369,7 +5946,7 @@ mod tests {
             for bridge_removed in [true, false] {
                 let mut server = Server::new_async().await;
                 let session = test_session(&server);
-                let config = vm_config(false);
+                let config = vm_config();
                 let initial_network = mock_default_bridge(&mut server).await;
                 let initial_permissions =
                     mock_privileges(&mut server, "/sdn/zones/localnetwork/vmbr0", &["SDN.Use"])
@@ -5499,7 +6076,6 @@ mod tests {
                     cpu_cores: 2,
                     memory_mb: 2048,
                     disk_size_gb: 32,
-                    auto_start: false,
                 };
                 import_and_cleanup_image(
                     &session,
@@ -5576,7 +6152,6 @@ mod tests {
                     cpu_cores: 2,
                     memory_mb: 2048,
                     disk_size_gb: 32,
-                    auto_start: false,
                 };
                 assert!(import_and_cleanup_image(
                     &session,
@@ -6548,7 +7123,7 @@ mod tests {
             assert!(updates.iter().any(|update| {
                 update.bytes_processed == 18 && update.message.starts_with("Uploading ")
             }));
-            assert_eq!(updates.last().unwrap().progress, 100);
+            crate::types::assert_progress_shape(&updates, &[FlashStage::Uploading]);
 
             upload_mock.assert_async().await;
             task_mock.assert_async().await;
@@ -6720,6 +7295,40 @@ mod tests {
             }
 
             upload_mock.assert_async().await;
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn test_upload_and_start_auth_expired() {
+            let mut server = Server::new_async().await;
+
+            let temp_dir = tempfile::tempdir().unwrap();
+            let temp_file = temp_dir.path().join("test-image.qcow2");
+            std::fs::write(&temp_file, b"test image content").unwrap();
+
+            let upload_mock = server
+                .mock("POST", "/api2/json/nodes/pve/storage/local/upload")
+                .with_status(401)
+                .create_async()
+                .await;
+            let start_mock = server
+                .mock("POST", "/api2/json/nodes/pve/qemu/100/status/start")
+                .with_status(401)
+                .create_async()
+                .await;
+            let session = test_session(&server);
+
+            let callback = TestProgressCallback::new();
+            assert!(matches!(
+                upload_image_to_proxmox(&session, "pve", &temp_file, &callback, "local").await,
+                Err(Error::ProxmoxSessionExpired)
+            ));
+            assert!(matches!(
+                start_vm(&session, "pve", 100).await,
+                Err(Error::ProxmoxSessionExpired)
+            ));
+            upload_mock.assert_async().await;
+            start_mock.assert_async().await;
         }
 
         #[tokio::test]

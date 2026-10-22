@@ -6,7 +6,32 @@ use std::path::{Path, PathBuf};
 use crate::types::{DeviceManifest, FlashStage, HaosImage, HaosRelease, ImageFormat};
 use crate::{ProgressCallback, ReleaseSource, Result};
 
-use super::{simulate, simulate_indeterminate, touch_placeholder, BackendMock};
+use super::{simulate, BackendMock};
+
+/// A raw image with only what the flash looks at inside one: a GPT naming a
+/// FAT `hassos-boot` partition, where Wi-Fi settings are added.
+fn write_boot_image(path: &Path) -> Result<()> {
+    const BOOT_SECTOR: usize = 2048;
+    const BOOT_SIZE: usize = 4 * 1024 * 1024;
+    let mut image = vec![0u8; BOOT_SECTOR * 512 + BOOT_SIZE];
+    image[512..520].copy_from_slice(b"EFI PART");
+    image[512 + 72..512 + 80].copy_from_slice(&2u64.to_le_bytes());
+    image[512 + 80..512 + 84].copy_from_slice(&1u32.to_le_bytes());
+    image[512 + 84..512 + 88].copy_from_slice(&128u32.to_le_bytes());
+    let entry = &mut image[1024..1152];
+    entry[32..40].copy_from_slice(&(BOOT_SECTOR as u64).to_le_bytes());
+    let last = (BOOT_SECTOR + BOOT_SIZE / 512 - 1) as u64;
+    entry[40..48].copy_from_slice(&last.to_le_bytes());
+    for (i, unit) in "hassos-boot".encode_utf16().enumerate() {
+        entry[56 + 2 * i..58 + 2 * i].copy_from_slice(&unit.to_le_bytes());
+    }
+    fatfs::format_volume(
+        std::io::Cursor::new(&mut image[BOOT_SECTOR * 512..]),
+        fatfs::FormatVolumeOptions::new(),
+    )?;
+    std::fs::write(path, image)?;
+    Ok(())
+}
 
 fn mock_haos_release() -> HaosRelease {
     HaosRelease {
@@ -105,34 +130,40 @@ impl ReleaseSource for BackendMock {
 
     async fn download_image<P: ProgressCallback>(
         &self,
-        _image: &HaosImage,
+        image: &HaosImage,
         dest_path: &Path,
         progress_callback: &P,
     ) -> Result<()> {
         simulate(
             progress_callback,
             FlashStage::Downloading,
+            image.size,
             "Downloading image (mock)...",
-            250,
         )
         .await?;
-        touch_placeholder(dest_path)
+        // Sized like the image without writing it, for the extraction to measure
+        std::fs::File::create(dest_path)?.set_len(image.size)?;
+        Ok(())
     }
 
     async fn extract_xz<P: ProgressCallback>(
         &self,
-        _archive_path: &Path,
+        archive_path: &Path,
         dest_path: &Path,
         progress_callback: &P,
     ) -> Result<()> {
-        simulate_indeterminate(
+        simulate(
             progress_callback,
             FlashStage::Extracting,
+            std::fs::metadata(archive_path)?.len(),
             "Extracting image (mock)...",
-            250,
         )
         .await?;
-        touch_placeholder(dest_path)
+        if dest_path.extension().is_some_and(|ext| ext == "img") {
+            write_boot_image(dest_path)
+        } else {
+            Ok(std::fs::write(dest_path, b"mock-image-data")?)
+        }
     }
 
     /// Keeps placeholder files out of the user's real image cache.

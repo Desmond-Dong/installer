@@ -4,7 +4,7 @@ import {
   renderErrorHelp,
   type InstallerError,
 } from "../../utils/installer-error.js";
-import { LitElement, html, css } from "lit";
+import { LitElement, html, css, nothing } from "lit";
 import {
   ViewAccessibility,
   reducedMotionStyles,
@@ -23,97 +23,107 @@ import "@home-assistant/webawesome/dist/components/button/button.js";
 import "@home-assistant/webawesome/dist/components/radio-group/radio-group.js";
 import { clearDriveSelection } from "../../utils/drive-selection.js";
 import "../../components/device-card.js";
+import "../../components/info-dialog.js";
 
 @customElement("ha-hardware-device-selection-view")
 export class HaHardwareDeviceSelectionView extends LitElement {
   protected readonly _accessibility = new ViewAccessibility(this);
-  static styles = css`
-    ${reducedMotionStyles}
-    :host {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      min-height: 100%;
-    }
-
-    h2 {
-      font-size: 1.5rem;
-      font-weight: 400;
-      color: var(--ha-text-color, #212121);
-      margin: 0 0 0.5rem 0;
-      text-align: center;
-    }
-
-    .subtitle {
-      font-size: 1rem;
-      color: var(--ha-secondary-text-color, #727272);
-      margin: 0 0 2rem 0;
-      text-align: center;
-    }
-
-    .devices-grid {
-      width: 100%;
-      max-width: 700px;
-    }
-
-    /* The group's default layout is a flex column; the tiles want a grid. */
-    .devices-grid::part(form-control-input) {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-      gap: 1.5rem;
-    }
-
-    .loading {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: 3rem;
-      color: var(--ha-secondary-text-color, #727272);
-    }
-
-    .loading-spinner {
-      width: 40px;
-      height: 40px;
-      border: 3px solid var(--ha-border-color, #e0e0e0);
-      border-top-color: var(--ha-primary-color, #03a9f4);
-      border-radius: 50%;
-      animation: spin 1s linear infinite;
-      margin-bottom: 1rem;
-    }
-
-    @keyframes spin {
-      to {
-        transform: rotate(360deg);
+  static styles = [
+    reducedMotionStyles,
+    css`
+      :host {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        min-height: 100%;
       }
-    }
 
-    .error {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding: 2rem;
-      text-align: center;
-    }
+      h2 {
+        font-size: 1.5rem;
+        font-weight: 400;
+        color: var(--ha-text-color, #212121);
+        margin: 0 0 0.5rem 0;
+        text-align: center;
+      }
 
-    .error-icon {
-      font-size: 3rem;
-      margin-bottom: 1rem;
-    }
+      .subtitle {
+        font-size: 1rem;
+        color: var(--ha-secondary-text-color, #727272);
+        margin: 0 0 2rem 0;
+        text-align: center;
+      }
 
-    .error-message {
-      color: var(--ha-error-color, #db4437);
-      margin-bottom: 1rem;
-    }
+      .devices-grid {
+        width: 100%;
+        max-width: 700px;
+      }
 
-    .hint {
-      max-width: 600px;
-      margin: 1.5rem 0 0 0;
-      font-size: 0.875rem;
-      color: var(--ha-secondary-text-color, #727272);
-      text-align: center;
-    }
-  `;
+      /* The group's default layout is a flex column; the tiles want a grid. */
+      .devices-grid::part(form-control-input) {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        gap: 1.5rem;
+      }
+
+      .loading {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 3rem;
+        color: var(--ha-secondary-text-color, #727272);
+      }
+
+      .loading-spinner {
+        width: 40px;
+        height: 40px;
+        border: 3px solid var(--ha-border-color, #e0e0e0);
+        border-top-color: var(--ha-primary-color, #03a9f4);
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        margin-bottom: 1rem;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      .error {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 2rem;
+        text-align: center;
+      }
+
+      .error-icon {
+        font-size: 3rem;
+        margin-bottom: 1rem;
+      }
+
+      .error-message {
+        color: var(--ha-error-color, #db4437);
+        margin-bottom: 1rem;
+      }
+
+      .reinstall-note {
+        margin: 1rem 0 0 0;
+        font-size: 0.9375rem;
+        line-height: 1.6;
+        color: var(--ha-text-color, #212121);
+      }
+
+      .hint {
+        max-width: 600px;
+        margin: 1.5rem 0 0 0;
+        font-size: 0.875rem;
+        color: var(--ha-secondary-text-color, #727272);
+        text-align: center;
+      }
+    `,
+  ];
 
   /** Selectable hardware, each with the storage config its write uses. */
   @state()
@@ -127,6 +137,15 @@ export class HaHardwareDeviceSelectionView extends LitElement {
 
   @state()
   private _selectedDeviceId: string | null = null;
+
+  /** Settles the open reinstall question; unset while none is asked. */
+  @state()
+  private _confirmReinstall?: (confirmed: boolean) => void;
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    this._answerReinstall(false);
+  }
 
   connectedCallback() {
     super.connectedCallback();
@@ -257,7 +276,74 @@ export class HaHardwareDeviceSelectionView extends LitElement {
           "views.ha_hardware.device_selection_view.yellow_compute_module_hint"
         )}
       </p>
+
+      ${this._renderReinstallDialog()}
     `;
+  }
+
+  private _renderReinstallDialog() {
+    const hardware = HA_HARDWARE.find(
+      ({ deviceId }) => deviceId === this._selectedDeviceId
+    );
+    if (!hardware) return nothing;
+    // A Yellow kit may come without a compute module, so nothing is on it yet
+    const yellow = hardware.id === "yellow-cm4" || hardware.id === "yellow-cm5";
+    return html`
+      <info-dialog
+        ?open=${!!this._confirmReinstall}
+        heading=${yellow
+          ? localize(
+              "views.ha_hardware.device_selection_view.yellow_may_be_ready"
+            )
+          : localize("views.ha_hardware.device_selection_view.ready_to_use", {
+              device: haHardwareName(hardware.id),
+            })}
+        message=${yellow
+          ? localize(
+              "views.ha_hardware.device_selection_view.yellow_comes_installed"
+            )
+          : localize("views.ha_hardware.device_selection_view.comes_installed")}
+        primary-label=${yellow
+          ? localize("common.install")
+          : localize("views.ha_hardware.device_selection_view.reinstall")}
+        secondary-label=${localize("common.go_back")}
+        @dialog-primary=${this._onReinstallConfirmed}
+        @dialog-secondary=${this._onReinstallDeclined}
+      >
+        <p class="reinstall-note">
+          ${yellow
+            ? localize("views.ha_hardware.device_selection_view.yellow_install")
+            : localize(
+                "views.ha_hardware.device_selection_view.only_reinstall"
+              )}
+        </p>
+      </info-dialog>
+    `;
+  }
+
+  /**
+   * Official hardware ships with Home Assistant installed, so before going on
+   * ask whether the user really wants to reinstall. Resolves true to go on.
+   */
+  confirmReinstall(): Promise<boolean> {
+    this._answerReinstall(false);
+    return new Promise((resolve) => {
+      this._confirmReinstall = resolve;
+    });
+  }
+
+  private _onReinstallConfirmed() {
+    this._answerReinstall(true);
+  }
+
+  private _onReinstallDeclined() {
+    this._answerReinstall(false);
+  }
+
+  private _answerReinstall(confirmed: boolean) {
+    const resolve = this._confirmReinstall;
+    this._confirmReinstall = undefined;
+    resolve?.(confirmed);
   }
 
   private _onDeviceChange(e: Event) {

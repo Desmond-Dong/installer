@@ -43,6 +43,7 @@ liblzma = { version = "0.4", features = ["static"] }
 # File system
 directories = "6"
 fs2 = "0.4"
+fatfs = { version = "0.3", default-features = false, features = ["std", "alloc"] }
 
 # URL encoding
 urlencoding = "2"
@@ -86,5 +87,7 @@ tauri-plugin-opener = "2"
 tauri-plugin-os = "=2.4.0"
 tauri-plugin-single-instance = "2"
 tauri-plugin-log = "2"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder"] }
 log = "0.4"
 os_info = "3"

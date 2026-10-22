@@ -5,11 +5,14 @@ import { logFrontendError } from "../../utils/diagnostics.js";
 import { customElement, state } from "lit/decorators.js";
 import { wizardState, type WizardState } from "../../state/wizard-state.js";
 import { formatBytes, getHaosRelease } from "../../api/commands.js";
+import { selectedWifi } from "../../utils/wifi.js";
+import { renderDriveIcon } from "../../components/drive-icon.js";
 import {
   findInstaller,
   installerName,
   type HaHardwareInstaller,
 } from "../ha-hardware/hardware.js";
+import "../../components/inline-notice.js";
 
 @customElement("confirmation-view")
 export class ConfirmationView extends LitElement {
@@ -50,13 +53,6 @@ export class ConfirmationView extends LitElement {
       max-width: 500px;
     }
 
-    @media (prefers-color-scheme: dark) {
-      .summary-card {
-        background-color: var(--ha-card-background, #1e1e1e);
-        border-color: var(--ha-border-color, #333333);
-      }
-    }
-
     .summary-row {
       display: flex;
       align-items: center;
@@ -91,12 +87,6 @@ export class ConfirmationView extends LitElement {
       justify-content: center;
       background-color: var(--ha-border-color, #e0e0e0);
       border-radius: 8px;
-    }
-
-    @media (prefers-color-scheme: dark) {
-      .device-image-placeholder {
-        background-color: var(--ha-border-color, #333333);
-      }
     }
 
     .icon-container svg {
@@ -144,44 +134,14 @@ export class ConfirmationView extends LitElement {
       overflow-wrap: anywhere;
     }
 
-    .notice {
-      display: flex;
-      align-items: flex-start;
-      gap: 0.75rem;
-      padding: 1rem;
+    inline-notice {
       margin-top: 1.5rem;
-      background-color: rgba(255, 152, 0, 0.1);
-      border: 1px solid rgba(255, 152, 0, 0.3);
-      border-radius: 8px;
-      max-width: 500px;
-      width: 100%;
-      box-sizing: border-box;
-      font-size: 0.875rem;
-      line-height: 1.5;
-      color: var(--ha-text-color, #212121);
-    }
-
-    @media (prefers-color-scheme: dark) {
-      .notice {
-        background-color: rgba(255, 152, 0, 0.15);
-        border-color: rgba(255, 152, 0, 0.4);
-      }
-    }
-
-    .notice p {
-      margin: 0;
     }
 
     .divider {
       height: 1px;
       background-color: var(--ha-border-color, #e0e0e0);
       margin: 0;
-    }
-
-    @media (prefers-color-scheme: dark) {
-      .divider {
-        background-color: var(--ha-border-color, #333333);
-      }
     }
   `;
 
@@ -236,6 +196,7 @@ export class ConfirmationView extends LitElement {
       .join(" ");
     const deviceConfig = selections.deviceConfig;
     const installer = findInstaller(deviceConfig?.board);
+    const wifi = selectedWifi(selections);
 
     return html`
       <h2>
@@ -282,7 +243,9 @@ export class ConfirmationView extends LitElement {
 
         <!-- Drive -->
         <div class="summary-row">
-          <div class="icon-container">${this._renderDriveIcon()}</div>
+          <div class="icon-container">
+            ${renderDriveIcon(selections.driveType ?? "unknown")}
+          </div>
           <div class="summary-info">
             <p class="summary-label">
               ${localize("views.sbc.confirmation_view.target_drive")}
@@ -302,6 +265,7 @@ export class ConfirmationView extends LitElement {
         <div class="divider"></div>
 
         ${installer ? this._renderInstaller(installer) : this._renderHaos()}
+        ${wifi ? this._renderWifi(wifi.ssid) : nothing}
       </div>
 
       ${this._wizardState.currentFlow === "ha-hardware"
@@ -371,12 +335,32 @@ export class ConfirmationView extends LitElement {
     `;
   }
 
+  private _renderWifi(network: string) {
+    return html`
+      <div class="divider"></div>
+      <div class="summary-row">
+        <div class="icon-container">
+          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path
+              d="M12,21L15.6,16.2C14.6,15.45 13.35,15 12,15C10.65,15 9.4,15.45 8.4,16.2L12,21M12,3C7.95,3 4.21,4.34 1.2,6.6L3,9C5.5,7.12 8.62,6 12,6C15.38,6 18.5,7.12 21,9L22.8,6.6C19.79,4.34 16.05,3 12,3M12,9C9.3,9 6.81,9.89 4.8,11.4L6.6,13.8C8.1,12.67 9.97,12 12,12C14.03,12 15.9,12.67 17.4,13.8L19.2,11.4C17.19,9.89 14.7,9 12,9Z"
+            />
+          </svg>
+        </div>
+        <div class="summary-info">
+          <p class="summary-label">
+            ${localize("views.sbc.confirmation_view.wifi")}
+          </p>
+          <p class="summary-value">${network}</p>
+        </div>
+      </div>
+    `;
+  }
+
   private _renderNotice(message: string) {
     return html`
-      <div class="notice" role="note">
-        <span aria-hidden="true">⚠️</span>
+      <inline-notice role="note">
         <p>${message}</p>
-      </div>
+      </inline-notice>
     `;
   }
 
@@ -391,16 +375,6 @@ export class ConfirmationView extends LitElement {
       <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
         <path
           d="M6 2C4.9 2 4 2.9 4 4V20C4 21.1 4.9 22 6 22H18C19.1 22 20 21.1 20 20V4C20 2.9 19.1 2 18 2H6ZM6 4H18V20H6V4ZM8 6V8H10V6H8ZM14 6V8H16V6H14ZM11 10V12H13V10H11ZM8 14V16H10V14H8ZM14 14V16H16V14H14Z"
-        />
-      </svg>
-    `;
-  }
-
-  private _renderDriveIcon() {
-    return html`
-      <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-        <path
-          d="M18 2H10L4 8V20C4 21.1 4.9 22 6 22H18C19.1 22 20 21.1 20 20V4C20 2.9 19.1 2 18 2ZM12 8H10V4H12V8ZM15 8H13V4H15V8ZM18 8H16V4H18V8Z"
         />
       </svg>
     `;

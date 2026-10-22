@@ -308,20 +308,39 @@ impl UtmClient {
 }
 ```
 
-### Network Checks
+### Host and Home Assistant Checks
 
 ```rust
-// crates/hai-core/src/network.rs
+// crates/hai-core/src/lib.rs (implemented for `Backend` in host.rs)
 
-/// Check if we have internet connectivity
-pub async fn check_connectivity() -> ConnectivityStatus;
+pub trait HostBackend {
+    /// Host CPU/memory info for VM sizing limits
+    fn system_info(&self) -> Result<SystemInfo>;
 
-/// Check if Home Assistant is ready (port 80 responding)
-pub async fn check_ha_ready(ip: &str) -> Result<bool>;
+    /// Whether the Home Assistant webserver at `ip` answers on port 80 (any non-5xx reply)
+    async fn check_ha_ready(&self, ip: &str) -> bool;
 
-/// Check if Home Assistant has finished updating (manifest.json)
-pub async fn check_ha_updated(ip: &str) -> Result<bool>;
+    /// Whether Home Assistant at `ip` has finished starting up (serves manifest.json)
+    async fn check_ha_updated(&self, ip: &str) -> bool;
+
+    /// What Supervisor reports while it installs Core: the Core download's
+    /// progress and problems that hold it up (`None` without a full answer)
+    async fn ha_setup_status(&self, ip: &str) -> Option<HaSetupStatus>;
+}
 ```
+
+Until Core runs, the Home Assistant OS landing page passes a few Supervisor
+API paths on without authentication. `ha_setup_status` reads three of them:
+`/supervisor-api/jobs/info` (the progress of the `home_assistant_core_install`
+and `supervisor_update` jobs), `/supervisor-api/network/info`
+(`host_internet` and `supervisor_internet`), and
+`/supervisor-api/resolution/info` (`free_space`, `docker_ratelimit`, and
+`update_failed` for Supervisor or Core: the issues that hold up the install).
+The VM flows show Core's progress and the most fundamental problem while they
+wait for `manifest.json`. They end the wait when a problem lasts 10 minutes
+while neither download moves, unless Core is already downloaded: then
+Supervisor stops the landing page to start Core. Diagnostics record the
+status as fixed categories only, never Supervisor's logs or text.
 
 ---
 
@@ -584,50 +603,4 @@ async generateQRCodes() {
 
 ## Toolbox Integration
 
-```typescript
-@customElement('toolbox-view')
-export class ToolboxView extends LitElement {
-  static styles = css`
-    :host {
-      display: block;
-      width: 100%;
-      height: 100%;
-    }
-    .toolbar {
-      padding: 8px 16px;
-      border-bottom: 1px solid var(--wa-color-neutral-200);
-    }
-    iframe {
-      width: 100%;
-      height: calc(100% - 48px);
-      border: none;
-    }
-  `;
-
-  render() {
-    return html`
-      <div class="toolbar">
-        <wa-button variant="text" @click=${this._close}>
-          ← Back to Installer
-        </wa-button>
-      </div>
-      <iframe src="https://toolbox.openhomefoundation.org/"></iframe>
-    `;
-  }
-
-  private _close() {
-    this.dispatchEvent(new CustomEvent('close-toolbox'));
-  }
-}
-```
-
-CSP Configuration (tauri.conf.json):
-```json
-{
-  "app": {
-    "security": {
-      "csp": "default-src 'self'; frame-src https://toolbox.openhomefoundation.org/"
-    }
-  }
-}
-```
+The toolbox button on the welcome screen opens `https://toolbox.openhomefoundation.org/` in the system browser through `openExternalUrl` (`src/utils/external-url.ts`). Nothing is embedded in the app, so the CSP in `tauri.conf.json` sets `frame-src 'none'`. Its `connect-src` allows Tauri's IPC protocol (`ipc:` on macOS and Linux, `http://ipc.localhost` on Windows); without it every command falls back to the slower postMessage interface.
