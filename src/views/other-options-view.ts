@@ -5,11 +5,10 @@ import {
   reducedMotionStyles,
 } from "../utils/view-accessibility.js";
 import { customElement } from "lit/decorators.js";
-import { pageHeaderStyles } from "../utils/page-header.js";
+import { pageHeaderStyles, renderBackHeader } from "../utils/page-header.js";
 import { linkStyles } from "../utils/link-styles.js";
 import "../components/option-card.js";
 import { openExternalLink, openExternalUrl } from "../utils/external-url.js";
-import "@home-assistant/webawesome/dist/components/button/button.js";
 
 interface OtherOption {
   title: string;
@@ -75,7 +74,7 @@ export class OtherOptionsView extends LitElement {
         flex-direction: column;
         align-items: center;
         overflow-y: auto;
-        padding: 1rem 2rem 2rem;
+        padding: 1rem var(--ha-page-gutter, 2rem) 2rem;
       }
 
       h1 {
@@ -106,11 +105,7 @@ export class OtherOptionsView extends LitElement {
 
   render() {
     return html`
-      <div class="header">
-        <wa-button appearance="plain" @click=${this._onBack}>
-          <span slot="start">←</span> ${localize("common.back")}
-        </wa-button>
-      </div>
+      ${renderBackHeader(this._onBack)}
 
       <div class="content">
         <h1>

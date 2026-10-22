@@ -3,6 +3,7 @@ import { customElement, state } from "lit/decorators.js";
 import { checkConnection } from "../api/commands.js";
 import { localize } from "../localization/localize.js";
 import { installerError } from "../utils/installer-error.js";
+import { pageHeaderStyles, renderBackHeader } from "../utils/page-header.js";
 import { ViewAccessibility } from "../utils/view-accessibility.js";
 import "@home-assistant/webawesome/dist/components/button/button.js";
 import "@home-assistant/webawesome/dist/components/spinner/spinner.js";
@@ -11,40 +12,47 @@ import "../components/casita-mascot.js";
 @customElement("connection-check-view")
 export class ConnectionCheckView extends LitElement {
   protected readonly _accessibility = new ViewAccessibility(this);
-  static styles = css`
-    :host {
-      display: flex;
-      flex-direction: column;
-      overflow-y: auto;
-      padding: 2rem;
-      box-sizing: border-box;
-      text-align: center;
-      color: var(--ha-text-color, #212121);
-    }
-    /* Centered while it fits, and scrolled from the top once it doesn't */
-    .content {
-      margin: auto 0;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 1.5rem;
-    }
-    h1 {
-      font-size: 1.5rem;
-      font-weight: 400;
-      margin: 0;
-    }
-    p {
-      max-width: 32rem;
-      overflow-wrap: anywhere;
-      margin: 0;
-      color: var(--ha-secondary-text-color, #727272);
-    }
-    .actions {
-      display: flex;
-      gap: 1rem;
-    }
-  `;
+  static styles = [
+    pageHeaderStyles,
+    css`
+      :host {
+        display: flex;
+        flex-direction: column;
+        box-sizing: border-box;
+        height: 100%;
+        text-align: center;
+        color: var(--ha-text-color, #212121);
+      }
+      .content {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 1.5rem;
+        overflow-y: auto;
+        padding: 1rem var(--ha-page-gutter, 2rem) 2rem;
+      }
+      /* The auto margins center the status while it fits; once it doesn't,
+         it scrolls from the top instead of being cut off */
+      .content > :first-child {
+        margin-top: auto;
+      }
+      .content > :last-child {
+        margin-bottom: auto;
+      }
+      h1 {
+        font-size: 1.5rem;
+        font-weight: 400;
+        margin: 0;
+      }
+      p {
+        max-width: 32rem;
+        overflow-wrap: anywhere;
+        margin: 0;
+        color: var(--ha-secondary-text-color, #727272);
+      }
+    `,
+  ];
 
   @state() private _checking = false;
   @state() private _error = "";
@@ -86,6 +94,7 @@ export class ConnectionCheckView extends LitElement {
   render() {
     // Both regions stay in the DOM, so a change to either is announced
     return html`
+      ${renderBackHeader(this._back)}
       <div class="content">
         ${this._checking
           ? html`<wa-spinner
@@ -107,17 +116,14 @@ export class ConnectionCheckView extends LitElement {
           </p>
           <p role="alert">${this._error}</p>
         </div>
-        <div class="actions">
-          <wa-button @click=${this._back}>${localize("common.back")}</wa-button>
-          ${this._failed
-            ? html`<wa-button
-                variant="brand"
-                ?loading=${this._checking}
-                @click=${this._check}
-                >${localize("views.connection_check_view.retry")}</wa-button
-              >`
-            : ""}
-        </div>
+        ${this._failed
+          ? html`<wa-button
+              variant="brand"
+              ?loading=${this._checking}
+              @click=${this._check}
+              >${localize("views.connection_check_view.retry")}</wa-button
+            >`
+          : ""}
       </div>
     `;
   }
