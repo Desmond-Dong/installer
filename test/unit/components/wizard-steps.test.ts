@@ -3,6 +3,7 @@ import { render } from "lit";
 import {
   WIZARD_STEPS,
   wizardStep,
+  type WizardStepView,
 } from "../../../src/components/wizard-steps.js";
 import {
   wizardState,
@@ -109,19 +110,42 @@ describe("wizard-steps", () => {
     ).to.be.false;
   });
 
-  it("connects and checks the Proxmox settings before leaving those steps", () => {
+  it("only holds Next for Proxmox and the official hardware", () => {
     expect(wizardStep("proxmox", "connection")?.beforeNext?.until).to.equal(
       "flow"
     );
     expect(wizardStep("proxmox", "configure")?.beforeNext?.until).to.equal(
       "selections"
     );
+    // Asks whether the hardware, which ships ready to use, should be reinstalled
+    expect(wizardStep("ha-hardware", "device")?.beforeNext?.until).to.equal(
+      "flow"
+    );
+    const held = new Set([
+      "proxmox/connection",
+      "proxmox/configure",
+      "ha-hardware/device",
+    ]);
     for (const flow of FLOWS) {
       for (const [id, step] of Object.entries(WIZARD_STEPS[flow])) {
-        if (flow === "proxmox" && (id === "connection" || id === "configure"))
-          continue;
-        expect(step.beforeNext, `${flow}/${id}`).to.be.undefined;
+        if (held.has(`${flow}/${id}`)) continue;
+        expect(step.beforeNext === undefined, `${flow}/${id}`).to.be.true;
       }
+    }
+  });
+
+  it("leaves the hardware device step only when the reinstall is confirmed", async () => {
+    const run = wizardStep("ha-hardware", "device")!.beforeNext!.run;
+    for (const answer of [true, false]) {
+      let asked = 0;
+      const view = Object.assign(document.createElement("div"), {
+        confirmReinstall: () => {
+          asked++;
+          return Promise.resolve(answer);
+        },
+      }) as unknown as WizardStepView;
+      expect(await run(view)).to.equal(answer);
+      expect(asked).to.equal(1);
     }
   });
 });
