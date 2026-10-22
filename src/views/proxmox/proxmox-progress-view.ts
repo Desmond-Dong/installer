@@ -31,6 +31,10 @@ import {
   waitForHomeAssistant,
   type WaitStage,
 } from "../../utils/vm-wait.js";
+import {
+  haSetupProblemMessage,
+  type HaSetupProgress,
+} from "../../utils/ha-setup.js";
 import "../../components/install-progress.js";
 
 /** The stages `proxmoxCreateVm` reports, in order */
@@ -120,6 +124,10 @@ export class ProxmoxProgressView extends LitElement {
 
   @state()
   private _error: InstallerError | null = null;
+
+  /** What Supervisor reports while it installs Home Assistant */
+  @state()
+  private _setup: HaSetupProgress = { progress: null, problem: null };
 
   @state()
   private _isInstalling = false;
@@ -292,6 +300,10 @@ export class ProxmoxProgressView extends LitElement {
           (await proxmoxGetVmStatus(session, node, vm_id)).ip_address,
         stopOn: needsUserAction,
         onStage: (stage) => this._startStage(stage),
+        onSetup: (setup) => {
+          this._setup = setup;
+          this._progress = Math.round(setup.progress ?? 0);
+        },
         messages: {
           noAddress: localize(
             "views.proxmox.proxmox_progress_view.the_virtual_machine_did_not_report_an_ip_address"
@@ -417,6 +429,7 @@ export class ProxmoxProgressView extends LitElement {
     this._stageStartTime = null;
     this._bytesProcessed = 0;
     this._totalBytes = 0;
+    this._setup = { progress: null, problem: null };
   }
 
   /** Show an error and tell the shell whether a retry is safe. */
@@ -474,6 +487,9 @@ export class ProxmoxProgressView extends LitElement {
         .indeterminate=${this._isIndeterminate(stage)}
         .measurable=${this._hasMeasurableProgress(stage)}
         .error=${this._error?.message ?? null}
+        .warning=${stage === "updating" && this._setup.problem
+          ? haSetupProblemMessage(this._setup.problem)
+          : null}
         .address=${checkedAddress(
           stage,
           this._wizardState.selections.ipAddress
@@ -493,6 +509,8 @@ export class ProxmoxProgressView extends LitElement {
 
   /** Check if the current stage has measurable progress */
   private _hasMeasurableProgress(stage: InstallStage): boolean {
+    // Once Supervisor reports downloading Core
+    if (stage === "updating") return this._setup.progress !== null;
     return (
       MEASURABLE_STAGES.includes(stage) &&
       (stage === "downloading" || this._totalBytes > 0)

@@ -691,6 +691,115 @@ describe("utm-progress-view", () => {
     el.remove();
   });
 
+  it("shows the Core download and what holds it up while Home Assistant installs", async () => {
+    wizardState.setSelection("vmId", "existing-vm");
+    mockTauriIpc((cmd) => {
+      switch (cmd) {
+        case "get_utm_vm_status":
+          return { status: "started", ip_address: "192.0.2.50" };
+        case "check_ha_ready":
+          return true;
+        case "check_ha_updated":
+          return false;
+        case "get_ha_setup_status":
+          return {
+            core_install_progress: 42.4,
+            supervisor_update_progress: null,
+            problems: ["no_internet"],
+          };
+      }
+      throw new Error(`Unexpected IPC command: ${cmd}`);
+    });
+    const el = mount();
+    await el.updateComplete;
+    const layout = el.shadowRoot!.querySelector("install-progress")!;
+
+    await waitUntil(
+      () => layout.stage === "updating" && layout.progress === 42,
+      "never showed the Core download"
+    );
+    expect(layout.measurable).to.be.true;
+    expect(layout.indeterminate).to.be.false;
+    await layout.updateComplete;
+    const shown = layout.shadowRoot!;
+    expect(shown.querySelector(".percentage")!.textContent).to.equal("42%");
+    await waitUntil(
+      () =>
+        shown
+          .querySelector(".warning")!
+          .textContent!.includes("can't reach the internet"),
+      "never showed the problem",
+      { timeout: 3000 }
+    );
+    // A problem alone doesn't end the wait
+    expect(el.hasError).to.be.false;
+    expect(el.leavable).to.be.true;
+    el.remove();
+  });
+
+  it("ends with what held up Home Assistant, and keeps waiting on retry", async () => {
+    wizardState.setSelection("vmId", "existing-vm");
+    const now = Date.now;
+    const logged: Record<string, unknown>[] = [];
+    let statuses = 0;
+    let solved = false;
+    mockTauriIpc(
+      (cmd, args) => {
+        switch (cmd) {
+          case "log_frontend_event":
+            logged.push(args as Record<string, unknown>);
+            return undefined;
+          case "get_utm_vm_status":
+            return { status: "started", ip_address: "192.0.2.50" };
+          case "check_ha_ready":
+            return true;
+          case "check_ha_updated":
+            return solved;
+          case "get_ha_setup_status":
+            // Seen once, then still there 11 minutes on, without a download
+            if (++statuses === 2) Date.now = () => now() + 11 * 60 * 1000;
+            return {
+              core_install_progress: null,
+              supervisor_update_progress: null,
+              problems: ["no_internet"],
+            };
+        }
+        throw new Error(`Unexpected IPC command: ${cmd}`);
+      },
+      { includeLogs: true }
+    );
+    try {
+      const el = mount();
+      const failed = await oneEvent(el, "install-error");
+      await el.updateComplete;
+
+      expect(failed.detail.retryable).to.be.true;
+      expect(errorText(el))
+        .to.contain("can't reach the internet")
+        .and.contain("made no progress for 10 minutes");
+      // Diagnostics get the problem as a fixed category, not its text. An
+      // earlier test's late cleanup may log here too, as the application.
+      const failure = () =>
+        logged.find(
+          (event) => event.flow === "utm" && event.outcome === "failed"
+        );
+      await waitUntil(failure);
+      expect(failure()).to.include({
+        stage: "updating",
+        error: "home_assistant_no_internet",
+      });
+
+      Date.now = now;
+      solved = true;
+      const completed = oneEvent(el, "install-complete");
+      el.retry();
+      await completed;
+      expect(wizardState.getState().selections.vmId).to.equal("existing-vm");
+    } finally {
+      Date.now = now;
+    }
+  });
+
   it("allows a timed-out readiness check to resume the existing VM", async () => {
     wizardState.setSelection("vmId", "existing-vm");
     const now = Date.now;

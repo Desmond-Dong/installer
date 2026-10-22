@@ -34,6 +34,10 @@ import {
   waitForHomeAssistant,
   type WaitStage,
 } from "../../utils/vm-wait.js";
+import {
+  haSetupProblemMessage,
+  type HaSetupProgress,
+} from "../../utils/ha-setup.js";
 import "../../components/install-progress.js";
 
 type InstallStage =
@@ -118,6 +122,10 @@ export class UtmProgressView extends LitElement {
   @state()
   private _error: InstallerError | null = null;
 
+  /** What Supervisor reports while it installs Home Assistant */
+  @state()
+  private _setup: HaSetupProgress = { progress: null, problem: null };
+
   @state()
   private _isInstalling = false;
 
@@ -189,6 +197,8 @@ export class UtmProgressView extends LitElement {
 
   /** Check if a stage has measurable progress (0-100%) */
   private _hasMeasurableProgress(stage: InstallStage): boolean {
+    // Once Supervisor reports downloading Core
+    if (stage === "updating") return this._setup.progress !== null;
     return (
       MEASURABLE_STAGES.includes(stage) &&
       (stage === "downloading" || this._totalBytes > 0)
@@ -327,6 +337,10 @@ export class UtmProgressView extends LitElement {
         vmAddress: async () => (await getUtmVmStatus(startedVmId)).ip_address,
         stopOn: failsEveryTime,
         onStage: (stage) => this._startStage(stage),
+        onSetup: (setup) => {
+          this._setup = setup;
+          this._progress = Math.round(setup.progress ?? 0);
+        },
         messages: {
           noAddress: localize(
             "views.utm.utm_progress_view.the_virtual_machine_did_not_report_an_ip_address"
@@ -463,6 +477,7 @@ export class UtmProgressView extends LitElement {
     this._stageStartTime = null;
     this._bytesProcessed = 0;
     this._totalBytes = 0;
+    this._setup = { progress: null, problem: null };
   }
 
   /** Download the HAOS qcow2 image, reporting download and extract progress */
@@ -563,6 +578,9 @@ export class UtmProgressView extends LitElement {
         .measurable=${this._hasMeasurableProgress(stage)}
         .hideEmptyDetails=${true}
         .error=${this._error?.message ?? null}
+        .warning=${stage === "updating" && this._setup.problem
+          ? haSetupProblemMessage(this._setup.problem)
+          : null}
         .address=${checkedAddress(
           stage,
           this._wizardState.selections.ipAddress

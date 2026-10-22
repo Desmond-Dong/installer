@@ -12,6 +12,7 @@ import {
   renderCasitaSad,
 } from "./install-mascot.js";
 import "./progress-bar.js";
+import "./inline-notice.js";
 import { renderErrorHelp } from "../utils/installer-error.js";
 import { openExternalLink } from "../utils/external-url.js";
 import {
@@ -314,6 +315,16 @@ export class InstallProgress extends LitElement {
         left: 30px;
       }
 
+      /* Always there, as a live region, but takes no room while empty */
+      .warning {
+        width: 100%;
+        max-width: 400px;
+      }
+
+      .warning inline-notice {
+        margin-bottom: 1rem;
+      }
+
       .address {
         font-size: 0.9375rem;
         color: var(--ha-secondary-text-color, #727272);
@@ -364,6 +375,8 @@ export class InstallProgress extends LitElement {
   @property({ type: Boolean, attribute: "hide-empty-details" })
   hideEmptyDetails = false;
   @property({ attribute: false }) error: string | null = null;
+  /** A problem holding up the stage, while the install goes on */
+  @property({ attribute: false }) warning: string | null = null;
   /** Where Home Assistant is being checked, once the VM has an address */
   @property({ attribute: false }) address: string | null = null;
   /** Leaving no longer stops anything, so the window may close */
@@ -393,6 +406,8 @@ export class InstallProgress extends LitElement {
       `;
     }
     const hasBubble = this.stage !== "complete" && this.stage !== "error";
+    // Its live region is mounted empty first, so the first warning is announced
+    const warning = this._status.ready ? this.warning : null;
     const currentIndex = this.stages.findIndex(
       (stage) => stage.id === this.stage
     );
@@ -493,6 +508,11 @@ export class InstallProgress extends LitElement {
               </div>
             `
           : ""}
+      </div>
+      <div class="warning" role="status">
+        ${warning
+          ? html`<inline-notice><p>${warning}</p></inline-notice>`
+          : nothing}
       </div>
       ${this.address
         ? html`<p class="address">

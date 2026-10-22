@@ -3,8 +3,9 @@
  * Assistant answering there, then Home Assistant done updating. The UTM and
  * Proxmox flows share it, so a fix to these checks lands in both.
  */
-import { checkHaReady, checkHaUpdated } from "../api/commands.js";
+import { checkHaReady } from "../api/commands.js";
 import { wizardState } from "../state/wizard-state.js";
+import { waitForHaSetup, type HaSetupProgress } from "./ha-setup.js";
 import { PollTimeoutError, pollUntil, throwIfCancelled } from "./polling.js";
 
 /** The waits, in order. The VM runs during all of them, so leaving is fine. */
@@ -34,6 +35,8 @@ export interface HomeAssistantWait {
   stopOn: (error: unknown) => boolean;
   /** Called as each wait starts */
   onStage: (stage: WaitStage) => void;
+  /** Called with what Supervisor reports while Home Assistant updates */
+  onSetup: (progress: HaSetupProgress) => void;
   /** Each wait's timeout, in the flow's own words */
   messages: {
     noAddress: string;
@@ -46,12 +49,14 @@ export interface HomeAssistantWait {
 /**
  * Wait for the VM's address, then for Home Assistant to answer there and to
  * finish updating, and return the address. A wait that runs out throws a
- * `PollTimeoutError` instead of reporting success.
+ * `PollTimeoutError` instead of reporting success, and a problem that holds
+ * up the update too long a `HaSetupStalledError`.
  */
 export async function waitForHomeAssistant({
   vmAddress,
   stopOn,
   onStage,
+  onSetup,
   messages,
   signal,
 }: HomeAssistantWait): Promise<string> {
@@ -78,13 +83,15 @@ export async function waitForHomeAssistant({
   });
   throwIfCancelled(signal);
 
-  // Home Assistant serves `manifest.json` once it has finished updating
+  // Home Assistant serves `manifest.json` once it has finished updating.
+  // Until then, its landing page tells how Supervisor gets on.
   onStage("updating");
-  await pollUntil(async () => (await checkHaUpdated(ipAddress)) || null, {
+  await waitForHaSetup(ipAddress, {
     interval: POLL_INTERVAL_MS,
     timeout: HA_UPDATED_TIMEOUT_MS,
     signal,
     timeoutMessage: messages.notUpdated(`http://${ipAddress}`),
+    onProgress: onSetup,
   });
   throwIfCancelled(signal);
 

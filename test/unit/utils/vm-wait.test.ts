@@ -2,6 +2,10 @@ import { expect } from "@open-wc/testing";
 import { wizardState } from "../../../src/state/wizard-state.js";
 import { PollTimeoutError } from "../../../src/utils/polling.js";
 import {
+  HaSetupStalledError,
+  type HaSetupProgress,
+} from "../../../src/utils/ha-setup.js";
+import {
   checkedAddress,
   isWaitStage,
   waitError,
@@ -41,6 +45,7 @@ describe("vm-wait", () => {
       },
       stopOn: () => false,
       onStage: (stage) => stages.push(stage),
+      onSetup: () => {},
       messages,
       signal: new AbortController().signal,
     });
@@ -55,6 +60,40 @@ describe("vm-wait", () => {
     ]);
   });
 
+  it("reports how Supervisor gets on while Home Assistant updates", async () => {
+    let updated = false;
+    mockTauriIpc((cmd) => {
+      switch (cmd) {
+        case "check_ha_ready":
+          return true;
+        case "check_ha_updated":
+          return updated;
+        case "get_ha_setup_status":
+          updated = true;
+          return {
+            core_install_progress: 60,
+            supervisor_update_progress: null,
+            problems: ["docker_ratelimit"],
+          };
+      }
+      throw new Error(`Unexpected IPC command: ${cmd}`);
+    });
+    const reported: HaSetupProgress[] = [];
+
+    await waitForHomeAssistant({
+      vmAddress: async () => "192.0.2.50",
+      stopOn: () => false,
+      onStage: () => {},
+      onSetup: (setup) => reported.push(setup),
+      messages,
+      signal: new AbortController().signal,
+    });
+
+    expect(reported).to.deep.equal([
+      { progress: 60, problem: "docker_ratelimit" },
+    ]);
+  });
+
   it("ends the address wait right away on an error asking again can't fix", async () => {
     const expired = ipcError("proxmox_session_expired", "Session expired");
     let asked = 0;
@@ -65,6 +104,7 @@ describe("vm-wait", () => {
       },
       stopOn: (error) => error === expired,
       onStage: () => {},
+      onSetup: () => {},
       messages,
       signal: new AbortController().signal,
     });
@@ -102,5 +142,8 @@ describe("vm-wait", () => {
     });
     const other = new Error("other");
     expect(waitError(other)).to.equal(other);
+    // Already shaped like a backend error, with its own retryable code
+    const stalled = new HaSetupStalledError("no_internet", "http://192.0.2.50");
+    expect(waitError(stalled)).to.equal(stalled);
   });
 });
