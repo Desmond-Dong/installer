@@ -70,9 +70,9 @@ describe("minipc-setup-method-view", () => {
     );
     // The installer ISO only boots on x86, and such an installer has no
     // built-in Wi-Fi: the wizard hides the Wi-Fi step for it.
-    expect(
-      wizardState.getState().steps.map((step) => step.id)
-    ).to.not.contain("wifi");
+    expect(wizardState.getState().steps.map((step) => step.id)).to.not.contain(
+      "wifi"
+    );
   });
 
   it("continues to the architecture step when the drive can be connected", async () => {
