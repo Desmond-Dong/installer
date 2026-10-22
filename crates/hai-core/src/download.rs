@@ -261,12 +261,12 @@ const OTA_MIRROR: &str = "https://ota.hasscn.top";
 
 // [China mirror] Upstream constants kept for reference and tests; release
 // metadata on this branch comes from the mirror instead of the GitHub API.
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 /// GitHub API URL for HAOS releases
 const HAOS_RELEASES_API: &str =
     "https://api.github.com/repos/home-assistant/operating-system/releases";
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 /// Images are only ever downloaded from the official HAOS repository.
 const HAOS_DOWNLOADS: &str = "https://github.com/home-assistant/operating-system/releases/download";
 
@@ -308,7 +308,7 @@ fn check_space(path: &Path, required: u64, available: u64) -> Result<()> {
 const METADATA_TIMEOUT: Duration = Duration::from_secs(15);
 const CONNECTION_FAILURE_MESSAGE: &str =
     "Cannot reach version.hasscn.top. Check your internet connection and try again.";
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 const GITHUB_CONNECTION_FAILURE_MESSAGE: &str =
     "Cannot reach GitHub release information. Check your internet connection and try again.";
 const MIRROR_CONNECTION_FAILURE_MESSAGE: &str =
