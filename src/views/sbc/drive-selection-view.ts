@@ -203,6 +203,10 @@ export class DriveSelectionView extends LitElement {
   private async _loadDrives() {
     // The previous result, error included, stays until this one replaces it
     this._loading = true;
+    // Next waits until this scan has confirmed the selection
+    if (wizardState.getState().selections.driveScanReady) {
+      wizardState.setSelection("driveScanReady", false);
+    }
 
     let drives: BlockDevice[];
     let error: InstallerError | null = null;
@@ -232,6 +236,7 @@ export class DriveSelectionView extends LitElement {
     this._loading = false;
     this._scanned = true;
     this._reconcileSelection();
+    wizardState.setSelection("driveScanReady", true);
 
     // Refresh can give way to the list it found, or the other way around
     await this.updateComplete;
@@ -259,6 +264,13 @@ export class DriveSelectionView extends LitElement {
    * and without this the wizard would carry that path to the erase.
    */
   private _reconcileSelection() {
+    // The install dropped a drive it couldn't confirm and sent the user back.
+    // Said only now, into the live region already in place, so it is announced.
+    if (wizardState.getState().selections.driveSelectionLost) {
+      wizardState.setSelection("driveSelectionLost", undefined);
+      this._selectionLost = true;
+    }
+
     const selection = readDriveSelection(wizardState.getState().selections);
     if (!selection) {
       this._selectedDriveId = null;
