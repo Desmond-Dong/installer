@@ -533,7 +533,8 @@ async fn fetch_release_from_mirror(base_url: &str, version: &str) -> Result<Haos
         )));
     }
     let client = shared_client()?;
-    let probes: Vec<_> = crate::manifest::bundled_manifest()
+    let manifest = crate::manifest::bundled_manifest();
+    let probes: Vec<_> = manifest
         .devices
         .iter()
         .flat_map(|device| {
