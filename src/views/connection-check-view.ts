@@ -102,9 +102,7 @@ export class ConnectionCheckView extends LitElement {
         <div>
           <p role="status">
             ${this._checking
-              ? localize(
-                  "views.connection_check_view.connecting_to_home_assistant_s_version_service"
-                )
+              ? localize("views.connection_check_view.connecting")
               : ""}
           </p>
           <p role="alert">${this._error}</p>

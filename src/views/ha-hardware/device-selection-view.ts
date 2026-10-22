@@ -197,9 +197,7 @@ export class HaHardwareDeviceSelectionView extends LitElement {
       if (this.isConnected) new InstallDiagnostics("flash").fail(err);
       this._error = installerError(
         err,
-        localize(
-          "views.ha_hardware.device_selection_view.failed_to_load_devices"
-        )
+        localize("common.failed_to_load_devices")
       );
     } finally {
       this._loading = false;
@@ -211,11 +209,7 @@ export class HaHardwareDeviceSelectionView extends LitElement {
       return html`
         <div class="loading">
           <div class="loading-spinner"></div>
-          <span
-            >${localize(
-              "views.ha_hardware.device_selection_view.loading_devices"
-            )}</span
-          >
+          <span>${localize("common.loading_devices")}</span>
         </div>
       `;
     }
@@ -238,7 +232,7 @@ export class HaHardwareDeviceSelectionView extends LitElement {
                 appearance="outlined"
                 @click=${this._loadDevices}
               >
-                ${localize("components.app_shell.try_again")}
+                ${localize("common.try_again")}
               </wa-button>`
             : ""}
         </div>
@@ -252,15 +246,13 @@ export class HaHardwareDeviceSelectionView extends LitElement {
         )}
       </h2>
       <p class="subtitle">
-        ${localize(
-          "views.ha_hardware.device_selection_view.choose_your_official_home_assistant_hardware_by_nabu_casa"
-        )}
+        ${localize("views.ha_hardware.device_selection_view.subtitle")}
       </p>
 
       <wa-radio-group
         class="devices-grid"
         radio-tag="device-card"
-        aria-label=${localize("components.app_shell.home_assistant_hardware")}
+        aria-label=${localize("common.home_assistant_hardware")}
         .value=${this._selectedDeviceId ?? ""}
         @change=${this._onDeviceChange}
       >

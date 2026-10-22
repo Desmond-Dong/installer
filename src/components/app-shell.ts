@@ -347,13 +347,13 @@ export class AppShell extends LitElement {
   private _getNextLabel(stepId: string | undefined): string {
     if (stepId === "flash" && this._flashError) {
       return this._installRetryable
-        ? localize("components.app_shell.try_again")
+        ? localize("common.try_again")
         : localize("components.app_shell.choose_another_drive");
     }
     if (stepId === "install" && this._vmInstallError) {
       return this._installReconnect
         ? localize("proxmox.reconnect")
-        : localize("components.app_shell.try_again");
+        : localize("common.try_again");
     }
     if (stepId === "confirm") {
       return localize("common.install");

@@ -311,7 +311,7 @@ export class ProxmoxConfigureView extends LitElement {
     if (!session) {
       this._setError({
         code: SESSION_EXPIRED,
-        message: localize("utils.installer_error.proxmox_session_expired"),
+        message: localize("proxmox.session_expired"),
         retryable: false,
         details: {},
       });
@@ -749,9 +749,7 @@ export class ProxmoxConfigureView extends LitElement {
   private get _vlanError(): string | undefined {
     if (!this._vlanTag) return undefined;
     if (this._parsedVlanTag === undefined) {
-      return localize(
-        "views.proxmox.proxmox_configure_view.vlan_tag_must_be_a_whole_number"
-      );
+      return localize("views.proxmox.proxmox_configure_view.vlan_tag_invalid");
     }
     if (
       this._loaded &&
@@ -759,7 +757,7 @@ export class ProxmoxConfigureView extends LitElement {
         ?.vlan_aware
     ) {
       return localize(
-        "views.proxmox.proxmox_configure_view.select_a_vlan_aware_bridge_or_remove_the_vlan_tag"
+        "views.proxmox.proxmox_configure_view.vlan_needs_aware_bridge"
       );
     }
     return undefined;
@@ -983,10 +981,10 @@ export class ProxmoxConfigureView extends LitElement {
                   (storage) => html`
                     <wa-option value=${storage.name}>
                       ${localize(
-                        "views.proxmox.proxmox_configure_view.value_value_free",
+                        "views.proxmox.proxmox_configure_view.storage_free",
                         {
-                          value0: storage.name,
-                          value1: formatBytes(storage.available),
+                          storage: storage.name,
+                          free: formatBytes(storage.available),
                         }
                       )}
                     </wa-option>
@@ -1080,15 +1078,9 @@ export class ProxmoxConfigureView extends LitElement {
   render() {
     if (this._error) {
       return html`
-        <h2>
-          ${localize(
-            "views.proxmox.proxmox_configure_view.configure_virtual_machine"
-          )}
-        </h2>
+        <h2>${localize("common.vm.configure_virtual_machine")}</h2>
         <p class="subtitle">
-          ${localize(
-            "views.proxmox.proxmox_configure_view.configure_your_home_assistant_vm_on_proxmox"
-          )}
+          ${localize("views.proxmox.proxmox_configure_view.subtitle")}
         </p>
         <div class="config-card">
           <p class="error-text" role="alert" style="overflow-wrap: anywhere;">
@@ -1103,7 +1095,7 @@ export class ProxmoxConfigureView extends LitElement {
               >
                 ${this._sessionExpired
                   ? localize("proxmox.reconnect")
-                  : localize("components.app_shell.try_again")}
+                  : localize("common.try_again")}
               </wa-button>`
             : ""}
         </div>
@@ -1111,15 +1103,9 @@ export class ProxmoxConfigureView extends LitElement {
     }
 
     return html`
-      <h2>
-        ${localize(
-          "views.proxmox.proxmox_configure_view.configure_virtual_machine"
-        )}
-      </h2>
+      <h2>${localize("common.vm.configure_virtual_machine")}</h2>
       <p class="subtitle">
-        ${localize(
-          "views.proxmox.proxmox_configure_view.configure_your_home_assistant_vm_on_proxmox"
-        )}
+        ${localize("views.proxmox.proxmox_configure_view.subtitle")}
       </p>
       <p class="sr-only" role="status">${this._importStatus}</p>
 
@@ -1129,9 +1115,7 @@ export class ProxmoxConfigureView extends LitElement {
           <div class="setting-icon">${this._renderLabelIcon()}</div>
           <div class="setting-content">
             <wa-input
-              label=${localize(
-                "views.proxmox.proxmox_configure_view.display_name"
-              )}
+              label=${localize("common.vm.display_name")}
               type="text"
               size="s"
               .value=${this._vmName}
@@ -1179,10 +1163,10 @@ export class ProxmoxConfigureView extends LitElement {
                           ${`${node.name}${
                             node.cpu_usage != null
                               ? ` ${localize(
-                                  "views.proxmox.proxmox_configure_view.cpu_value",
+                                  "views.proxmox.proxmox_configure_view.node_cpu_usage",
                                   {
                                     // Proxmox reports a fraction (0.15 is 15%)
-                                    value0: formatNumber(node.cpu_usage, {
+                                    percent: formatNumber(node.cpu_usage, {
                                       style: "percent",
                                       maximumFractionDigits: 1,
                                     }),
@@ -1196,9 +1180,7 @@ export class ProxmoxConfigureView extends LitElement {
                   </wa-select>
                 `}
             <p class="setting-description">
-              ${localize(
-                "views.proxmox.proxmox_configure_view.proxmox_node_where_the_vm_will_be_created"
-              )}
+              ${localize("views.proxmox.proxmox_configure_view.node_hint")}
             </p>
           </div>
         </div>
@@ -1226,10 +1208,10 @@ export class ProxmoxConfigureView extends LitElement {
                       (storage) => html`
                         <wa-option value=${storage.name}>
                           ${localize(
-                            "views.proxmox.proxmox_configure_view.value_value_free",
+                            "views.proxmox.proxmox_configure_view.storage_free",
                             {
-                              value0: storage.name,
-                              value1: formatBytes(storage.available),
+                              storage: storage.name,
+                              free: formatBytes(storage.available),
                             }
                           )}
                         </wa-option>
@@ -1238,9 +1220,7 @@ export class ProxmoxConfigureView extends LitElement {
                   </wa-select>
                 `}
             <p class="setting-description">
-              ${localize(
-                "views.proxmox.proxmox_configure_view.storage_location_for_the_vm_disk_image"
-              )}
+              ${localize("views.proxmox.proxmox_configure_view.storage_hint")}
             </p>
             ${this._reloadFrom === "storage" ||
             (this._loaded &&
@@ -1255,7 +1235,7 @@ export class ProxmoxConfigureView extends LitElement {
                     ${this._reloadFrom === "storage"
                       ? ""
                       : localize(
-                          "views.proxmox.proxmox_configure_view.no_disk_image_storage_on_this_node"
+                          "views.proxmox.proxmox_configure_view.no_disk_storage_on_node"
                         )}
                   </p>
                   <wa-button
@@ -1263,7 +1243,7 @@ export class ProxmoxConfigureView extends LitElement {
                     ?disabled=${this._importBusy}
                     ?loading=${this._reloadFrom === "storage"}
                     @click=${this._retryStorage}
-                    >${localize("components.app_shell.try_again")}</wa-button
+                    >${localize("common.try_again")}</wa-button
                   >`
               : ""}
           </div>
@@ -1316,7 +1296,7 @@ export class ProxmoxConfigureView extends LitElement {
                             ? ""
                             : this._selectedNode
                               ? localize(
-                                  "views.proxmox.proxmox_configure_view.no_network_bridges_available_on_this_node"
+                                  "views.proxmox.proxmox_configure_view.no_bridges"
                                 )
                               : localize(
                                   "views.proxmox.proxmox_configure_view.no_online_proxmox_nodes_found"
@@ -1326,9 +1306,7 @@ export class ProxmoxConfigureView extends LitElement {
                           class="bridge-retry"
                           ?loading=${this._reloadFrom === "bridges"}
                           @click=${this._retryBridges}
-                          >${localize(
-                            "components.app_shell.try_again"
-                          )}</wa-button
+                          >${localize("common.try_again")}</wa-button
                         >`
                     : ""}
                 `}
