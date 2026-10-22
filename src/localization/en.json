@@ -227,7 +227,7 @@
   "components.install_progress.minutes_remaining": "About {minutes, plural, one {# minute} other {# minutes}} remaining",
   "components.install_progress.hours_minutes_remaining": "About {hours, number}h {minutes, number}m remaining",
   "common.install.complete": "Complete!",
-  "views.proxmox.proxmox_progress_view.connecting": "Connecting",
+  "common.vm.connecting": "Connecting",
   "common.vm.creating": "Creating",
   "common.vm.creating_virtual_machine": "Creating virtual machine",
   "common.install.downloading": "Downloading",
