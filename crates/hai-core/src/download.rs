@@ -2344,7 +2344,8 @@ mod tests {
         failed.assert_async().await;
         failed.remove_async().await;
         for version in ["18.3", "18.4"] {
-            let download_url = format!("{OTA_MIRROR}/{version}/haos_rpi5-64-{version}.img.xz");
+            let url = server.url();
+            let download_url = format!("{url}/{version}/haos_rpi5-64-{version}.img.xz");
             let mock = server
                 .mock(
                     "HEAD",
@@ -2355,7 +2356,6 @@ mod tests {
                 .expect(1)
                 .create_async()
                 .await;
-            let url = server.url();
             let (first, second) = tokio::join!(
                 fetch_cached_release(&cache, &url, version),
                 fetch_cached_release(&cache, &url, version)
