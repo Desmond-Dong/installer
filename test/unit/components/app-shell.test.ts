@@ -459,7 +459,11 @@ describe("app-shell", () => {
       ) as LitElement;
       await method.updateComplete;
 
-      click(method.shadowRoot!.querySelector("option-card")!, 1);
+      // The USB stick installer card takes its own route without an
+      // architecture step; this test double-clicks the connect-drive card.
+      const connectDrive =
+        method.shadowRoot!.querySelectorAll("option-card")[1];
+      click(connectDrive!, 1);
       await el.updateComplete;
       const architectures = shellOf(el).querySelector(
         "minipc-architecture-selection-view"
