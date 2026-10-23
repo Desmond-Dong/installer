@@ -62,11 +62,10 @@ for (const width of [1100, 390]) {
       await expect(success.locator(".next-steps")).toContainText(
         "router or on an attached display"
       );
-      // Formatting is what to avoid while ejecting, so it is part of that step
-      await expect(success.locator(".step-text").first()).toContainText(
-        "if it offers to format or initialize the drive, choose Cancel or Ignore"
+      // Desktop Chrome reports Windows and Desktop Safari macOS, so both warn
+      await expect(success.locator("inline-notice")).toContainText(
+        "because it doesn't know the Home Assistant partitions"
       );
-      await expect(success.locator("inline-notice")).toHaveCount(0);
       await expect(success.locator(".next-steps-footer a")).toBeVisible();
       await expect(next(page)).toHaveText("Done");
       await expect(success.locator(".next-steps")).toContainText(
