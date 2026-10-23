@@ -38,11 +38,13 @@ const LOCATION_FAILURES = [
 export class LiveUsbProgressView extends InstallProgressView {
   static styles = css`
     :host {
-      display: block;
-      height: 100%;
+      display: flex;
+      flex-direction: column;
+      min-height: 100%;
     }
     install-progress {
       width: 100%;
+      flex: 1;
     }
     .keep-plugged-in {
       margin: 0 auto 1rem;

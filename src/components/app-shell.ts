@@ -242,6 +242,7 @@ export class AppShell extends LitElement {
     switch (this._currentView) {
       case "connection-check":
         return html`<connection-check-view
+          role="main"
           @connection-ready=${this._onConnectionReady}
           @connection-back=${this._onConnectionBack}
         ></connection-check-view>`;
@@ -251,11 +252,13 @@ export class AppShell extends LitElement {
         ></welcome-view>`;
       case "path-selection":
         return html`<path-selection-view
+          role="main"
           @navigate=${this._onNavigate}
           @select-path=${this._onSelectPath}
         ></path-selection-view>`;
       case "other-options":
         return html`<other-options-view
+          role="main"
           @navigate=${this._onNavigate}
         ></other-options-view>`;
       case "wizard":
@@ -303,6 +306,7 @@ export class AppShell extends LitElement {
 
     return html`
       <wizard-shell
+        .flowTitle=${this._flowTitle(this._wizardState.currentFlow)}
         .nextDisabled=${nextDisabled}
         .nextBusy=${!!busy}
         .nextLabel=${busy ?? nextLabel}
@@ -322,6 +326,18 @@ export class AppShell extends LitElement {
         ${step?.render() ?? nothing}
       </wizard-shell>
     `;
+  }
+
+  private _flowTitle(flow: WizardFlow | null): string {
+    if (!flow) return "";
+    const titles: Record<WizardFlow, string> = {
+      sbc: localize("common.raspberry_pi_other_boards"),
+      minipc: localize("common.generic_mini_pc"),
+      "ha-hardware": localize("common.home_assistant_hardware"),
+      proxmox: localize("common.proxmox_server"),
+      vm: localize("common.virtual_machine"),
+    };
+    return titles[flow];
   }
 
   private _getNextLabel(step: WizardStepDefinition | undefined): string {
