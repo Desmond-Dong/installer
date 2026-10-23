@@ -35,11 +35,11 @@ test("Mini PC choices work with Tab, Space, and arrow keys", async ({
     page.getByRole("button", { name: "I need to boot from USB" }),
     "Space"
   );
-  await expect(page.getByRole("dialog")).toBeVisible();
-  await activate(
-    page,
-    page.getByRole("button", { name: "Go back", exact: true })
-  );
+  // [China mirror] The USB boot option is a real installer route now: it
+  // skips the architecture step, because the ISO is Intel/AMD only, and
+  // lands among the drives. Going back returns to the method choice.
+  await expect(page.locator("drive-selection-view")).toBeVisible();
+  await activate(page, page.getByRole("button", { name: "Back", exact: true }));
   await activate(
     page,
     page.getByRole("button", { name: "I can connect the drive" })
