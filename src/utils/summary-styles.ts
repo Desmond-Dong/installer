@@ -12,6 +12,7 @@ import { formatDiskSize, formatRam } from "./format.js";
 import { homeAssistantLogo, mdiHarddisk, mdiMonitor } from "./icons.js";
 import { panelStyles } from "./panel-styles.js";
 import { sectionLabelStyles } from "./section-label-styles.js";
+import { renderIcon } from "./render-icon.js";
 
 /** The card the confirm steps sum up an install in, one row per part. */
 export const summaryStyles = css`
@@ -78,15 +79,6 @@ export const summaryStyles = css`
     margin: 0;
   }
 `;
-
-/** A 24 by 24 icon, like the MDI ones, for a summary row */
-export function renderSummaryIcon(path: string) {
-  return html`
-    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-      <path d=${path} />
-    </svg>
-  `;
-}
 
 /** The Home Assistant logo, in the primary color */
 export const haIcon = html`
@@ -160,7 +152,7 @@ export function renderVmSummaryRows(
 ) {
   return html`
     ${renderSummaryRow(
-      renderSummaryIcon(mdiMonitor),
+      renderIcon(mdiMonitor),
       localize("common.virtual_machine"),
       name,
       html`<p class="summary-detail">
@@ -174,7 +166,7 @@ export function renderVmSummaryRows(
     <div class="divider"></div>
 
     ${renderSummaryRow(
-      renderSummaryIcon(mdiHarddisk),
+      renderIcon(mdiHarddisk),
       localize("utils.summary_styles.disk_storage"),
       formatDiskSize(config.disk_size_gb),
       html`<p class="summary-detail">
