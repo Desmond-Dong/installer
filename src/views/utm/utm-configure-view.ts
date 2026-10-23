@@ -19,38 +19,20 @@ import {
   isValidUtmVmName,
 } from "../../state/vm-defaults.js";
 import { settingStyles } from "../../utils/setting-styles.js";
+import { fieldError, fieldErrorStyles } from "../../utils/field-error.js";
 import "../../components/vm-resources.js";
 import type { VmResourceValues } from "../../components/vm-resources.js";
+import { renderStepHeading, stepStyles } from "../../utils/step-styles.js";
 
 @customElement("utm-configure-view")
 export class UtmConfigureView extends LitElement {
   protected readonly _accessibility = new ViewAccessibility(this);
   static styles = [
+    stepStyles,
     reducedMotionStyles,
     settingStyles,
+    fieldErrorStyles,
     css`
-      :host {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        min-height: 100%;
-      }
-
-      h2 {
-        font-size: 1.5rem;
-        font-weight: 400;
-        color: var(--ha-text-color, #212121);
-        margin: 0 0 0.5rem 0;
-        text-align: center;
-      }
-
-      .subtitle {
-        font-size: 1rem;
-        color: var(--ha-secondary-text-color, #727272);
-        margin: 0 0 1.5rem 0;
-        text-align: center;
-      }
-
       .config-card {
         display: flex;
         flex-direction: column;
@@ -58,7 +40,7 @@ export class UtmConfigureView extends LitElement {
         padding: 1rem 1.25rem;
         background-color: var(--ha-card-background, #ffffff);
         border: 1px solid var(--ha-border-color, #e0e0e0);
-        border-radius: 12px;
+        border-radius: var(--ha-card-border-radius, 12px);
         width: 100%;
         box-sizing: border-box;
         max-width: 500px;
@@ -133,10 +115,12 @@ export class UtmConfigureView extends LitElement {
   }
 
   private _saveSelections() {
-    wizardState.setSelection("vmName", this._vmName);
-    wizardState.setSelection("cpuCores", this._cpuCores);
-    wizardState.setSelection("memoryMb", this._memoryMb);
-    wizardState.setSelection("diskSizeGb", this._diskSizeGb);
+    wizardState.setSelections({
+      vmName: this._vmName,
+      cpuCores: this._cpuCores,
+      memoryMb: this._memoryMb,
+      diskSizeGb: this._diskSizeGb,
+    });
   }
 
   private get _nameError(): string | undefined {
@@ -202,16 +186,10 @@ export class UtmConfigureView extends LitElement {
 
   render() {
     return html`
-      <h2>
-        ${localize(
-          "views.proxmox.proxmox_configure_view.configure_virtual_machine"
-        )}
-      </h2>
-      <p class="subtitle">
-        ${localize(
-          "views.utm.utm_configure_view.customize_your_home_assistant_vm_settings"
-        )}
-      </p>
+      ${renderStepHeading(
+        localize("common.vm.configure_virtual_machine"),
+        localize("views.utm.utm_configure_view.subtitle")
+      )}
 
       <div class="config-card">
         <!-- VM Name -->
@@ -219,24 +197,20 @@ export class UtmConfigureView extends LitElement {
           <div class="setting-icon">${this._renderLabelIcon()}</div>
           <div class="setting-content">
             <wa-input
-              label=${localize(
-                "views.proxmox.proxmox_configure_view.display_name"
-              )}
+              label=${localize("common.vm.display_name")}
               type="text"
               size="s"
               .value=${this._vmName}
               @input=${this._onNameChange}
               placeholder=${DEFAULT_UTM_VM_NAME}
-              .customError=${this._nameError ?? null}
+              ${fieldError(this._nameError)}
             >
               <!-- In the hint slot, so the field describes itself with it.
                 Not role="alert": ViewAccessibility focuses a new alert, which
                 would pull focus out of the field halfway through typing -->
               <span slot="hint" class="name-hint" aria-live="polite"
                 >${this._nameError ??
-                localize(
-                  "views.utm.utm_configure_view.shown_in_utm_s_virtual_machine_list"
-                )}</span
+                localize("views.utm.utm_configure_view.vm_name_hint")}</span
               >
             </wa-input>
           </div>

@@ -5,7 +5,7 @@ test.describe("Proxmox Installation Flow", () => {
   test.beforeEach(async ({ page }) => {
     // Use mock mode to avoid actual Proxmox connections
     await page.goto("/");
-    await page.locator("welcome-view").locator("wa-button").click();
+    await page.getByRole("button", { name: "Let's go" }).click();
     await expect(page.locator("path-selection-view")).toBeVisible();
     // Select Proxmox Server option
     await page.locator('option-card[heading="Proxmox server"]').click();
@@ -74,9 +74,13 @@ test.describe("Proxmox Installation Flow", () => {
     // Click next - should trigger validation
     await nextButton.click();
 
-    // Should show error message and stay on connect view
-    await expect(connectView.locator(".status-row")).toBeVisible();
-    await expect(connectView).toContainText("Please fill in all fields");
+    // Should say on each empty field what is missing and stay on connect view
+    await expect(connectView.locator("wa-input[custom-error]")).toHaveCount(3);
+    await expect(connectView).toContainText("Enter the server URL");
+    await expect(connectView).toContainText("Enter the username");
+    await expect(connectView).toContainText("Enter the password");
+    await expect(connectView.locator("#server-url")).toBeFocused();
+    await expect(connectView.locator(".status-row")).toHaveCount(0);
     await expect(connectView).toBeVisible();
   });
 
@@ -97,9 +101,12 @@ test.describe("Proxmox Installation Flow", () => {
     // Click next - should trigger validation
     await nextButton.click();
 
-    // Should show error message about HTTPS and stay on connect view
-    await expect(connectView.locator(".status-row")).toBeVisible();
-    await expect(connectView).toContainText("HTTPS");
+    // Should say on the URL field that it needs HTTPS and stay on connect view
+    const url = connectView.locator("#server-url");
+    await expect(url).toBeFocused();
+    await expect(url).toHaveAttribute("aria-invalid", "true");
+    await expect(url).toHaveAccessibleDescription(/HTTPS/);
+    await expect(connectView.locator(".status-row")).toHaveCount(0);
     await expect(connectView).toBeVisible();
   });
 
@@ -364,10 +371,12 @@ test.describe("Proxmox Installation Flow", () => {
     );
     await expect(wizardShell.locator(".footer-right wa-button")).toHaveCount(0);
 
-    // Past this, the VM exists, and the install runs to the end
-    await expect(wizardShell.locator(".footer")).not.toBeVisible({
+    // Past this, the VM exists, and the install runs to the end. Cancel
+    // goes, but the footer stays in place
+    await expect(wizardShell.locator(".footer-left wa-button")).toBeHidden({
       timeout: 15000,
     });
+    await expect(wizardShell.locator(".footer-left")).toBeVisible();
   });
 
   test("step 4: Cancel asks first, then stops before anything is created", async ({
@@ -471,7 +480,7 @@ test.describe("Proxmox Installation Flow", () => {
     await expect(page.locator("welcome-view")).toBeVisible();
 
     // Restart and test cancel on step 2
-    await page.locator("welcome-view").locator("wa-button").click();
+    await page.getByRole("button", { name: "Let's go" }).click();
     await page.locator('option-card[heading="Proxmox server"]').click();
     await navigateToProxmoxStep2(page);
     await wizardShell.locator(".footer-left wa-button").click();

@@ -3,6 +3,7 @@ import { wizardState } from "../../../src/state/wizard-state.js";
 import { MOCK_BLOCK_DEVICES } from "../../../src/api/mock-data.js";
 import { storeDriveSelection } from "../../../src/utils/drive-selection.js";
 import { ipcError, mockTauriIpc, restoreTauriIpc } from "../tauri-ipc.js";
+import { expectThemeLink } from "../helpers/link-style.js";
 import "../../../src/components/app-shell.js";
 import "../../../src/views/ha-hardware/device-selection-view.js";
 
@@ -69,6 +70,7 @@ describe("structured IPC errors in views", () => {
     expect(el.shadowRoot!.textContent).to.contain("account permissions");
     expect(el.shadowRoot!.textContent).not.to.contain("secret");
     expect(el.shadowRoot!.querySelectorAll(".error-help a").length).to.equal(1);
+    expectThemeLink(el.shadowRoot!.querySelector(".error-help a")!);
   });
 
   for (const tag of [
@@ -92,7 +94,7 @@ describe("structured IPC errors in views", () => {
             ipcError(
               // Not unsupported_platform: the UTM check has its own screen for that
               retryable ? "permission_denied" : "json",
-              "Run as administrator",
+              "Not authorized to access the device",
               retryable
             )
           )
@@ -103,7 +105,9 @@ describe("structured IPC errors in views", () => {
         fixtureSync(html`<div>${el}</div>`);
         await waitUntil(() => !!el.shadowRoot?.querySelector(".error-help"));
         expect(el.shadowRoot!.textContent).to.contain(
-          retryable ? "Run as administrator" : "unexpected response"
+          retryable
+            ? "Not authorized to access the device"
+            : "unexpected response"
         );
         const retry = [...el.shadowRoot!.querySelectorAll("wa-button")].find(
           (button) => button.textContent?.includes("Try again")
@@ -115,6 +119,7 @@ describe("structured IPC errors in views", () => {
         expect(
           el.shadowRoot!.querySelectorAll(".error-help a").length
         ).to.equal(1);
+        expectThemeLink(el.shadowRoot!.querySelector(".error-help a")!);
         expect(el.shadowRoot!.querySelector(".error-help diagnostics-actions"))
           .to.exist;
       });

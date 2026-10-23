@@ -4,7 +4,8 @@ import {
   renderErrorHelp,
   type InstallerError,
 } from "../../utils/installer-error.js";
-import { LitElement, html, css } from "lit";
+import { linkStyles } from "../../utils/link-styles.js";
+import { LitElement, html, css, nothing } from "lit";
 import {
   ViewAccessibility,
   reducedMotionStyles,
@@ -19,36 +20,16 @@ import "@home-assistant/webawesome/dist/components/button/button.js";
 import type WaRadioGroup from "@home-assistant/webawesome/dist/components/radio-group/radio-group.js";
 import "@home-assistant/webawesome/dist/components/radio-group/radio-group.js";
 import "@home-assistant/webawesome/dist/components/radio/radio.js";
+import { renderStepHeading, stepStyles } from "../../utils/step-styles.js";
 
 @customElement("minipc-architecture-selection-view")
 export class MiniPCArchitectureSelectionView extends LitElement {
   protected readonly _accessibility = new ViewAccessibility(this);
   static styles = [
+    stepStyles,
     reducedMotionStyles,
+    linkStyles,
     css`
-      :host {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        min-height: 100%;
-      }
-
-      h2 {
-        font-size: 1.5rem;
-        font-weight: 400;
-        color: var(--ha-text-color, #212121);
-        margin: 0 0 0.5rem 0;
-        text-align: center;
-      }
-
-      .subtitle {
-        font-size: 1rem;
-        color: var(--ha-secondary-text-color, #727272);
-        margin: 0 0 2rem 0;
-        text-align: center;
-        max-width: 500px;
-      }
-
       .options {
         display: block;
         width: 100%;
@@ -79,12 +60,44 @@ export class MiniPCArchitectureSelectionView extends LitElement {
       }
 
       wa-radio {
+        position: relative;
         flex: 1;
         min-width: 0;
         height: auto;
         padding: 1.5rem;
-        border-radius: 12px;
+        border-radius: var(--ha-card-border-radius, 12px);
         align-items: flex-start;
+      }
+
+      /* The chosen one gets a check like the device and drive cards, as its
+         border and tint are only a change of color */
+      .selected-indicator {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        width: 24px;
+        height: 24px;
+        background-color: var(--ha-primary-fill, #006787);
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--wa-color-brand-on-loud, white);
+        font-size: 14px;
+      }
+
+      /* Forced colors would draw both choices with the same border, and hide
+         the check behind a backplate */
+      @media (forced-colors: active) {
+        wa-radio[aria-checked="true"] {
+          border-color: Highlight;
+        }
+
+        .selected-indicator {
+          forced-color-adjust: none;
+          background-color: Highlight;
+          color: HighlightText;
+        }
       }
 
       wa-radio::part(label) {
@@ -120,16 +133,18 @@ export class MiniPCArchitectureSelectionView extends LitElement {
         margin: 0 0 0.25rem 0;
       }
 
+      /* The control shade of secondary text stays readable on the selected
+       * card's tinted fill */
       .option-description {
         font-size: 0.875rem;
-        color: var(--ha-secondary-text-color, #727272);
+        color: var(--ha-control-secondary-text-color, #686868);
         margin: 0 0 0.75rem 0;
         line-height: 1.4;
       }
 
       .option-examples {
         font-size: 0.8125rem;
-        color: var(--ha-secondary-text-color, #9e9e9e);
+        color: var(--ha-control-secondary-text-color, #686868);
         margin: 0;
         line-height: 1.4;
       }
@@ -239,8 +254,10 @@ export class MiniPCArchitectureSelectionView extends LitElement {
         )
       ) {
         this._selectedDeviceId = null;
-        wizardState.setSelection("device", undefined);
-        wizardState.setSelection("deviceConfig", undefined);
+        wizardState.setSelections({
+          device: undefined,
+          deviceConfig: undefined,
+        });
       }
       wizardState.setSelection("deviceCatalogReady", true);
     } catch (err) {
@@ -299,7 +316,7 @@ export class MiniPCArchitectureSelectionView extends LitElement {
                 appearance="outlined"
                 @click=${this._loadDevices}
               >
-                ${localize("components.app_shell.try_again")}
+                ${localize("common.try_again")}
               </wa-button>`
             : ""}
         </div>
@@ -307,16 +324,12 @@ export class MiniPCArchitectureSelectionView extends LitElement {
     }
 
     return html`
-      <h2>
-        ${localize(
+      ${renderStepHeading(
+        localize(
           "views.minipc.architecture_selection_view.select_your_architecture"
-        )}
-      </h2>
-      <p class="subtitle">
-        ${localize(
-          "views.minipc.architecture_selection_view.choose_the_cpu_architecture_of_your_mini_pc"
-        )}
-      </p>
+        ),
+        localize("views.minipc.architecture_selection_view.subtitle")
+      )}
 
       <wa-radio-group
         class="options"
@@ -345,15 +358,16 @@ export class MiniPCArchitectureSelectionView extends LitElement {
                   </p>
                   <p class="option-description">
                     ${localize(
-                      "views.minipc.architecture_selection_view.standard_pc_architecture_used_by_most_mini_pcs_nucs_and_desktops"
+                      "views.minipc.architecture_selection_view.x86_64_description"
                     )}
                   </p>
                   <p class="option-examples">
                     ${localize(
-                      "views.minipc.architecture_selection_view.examples_intel_nuc_asus_nuc_beelink_gmktec_minisforum_dell_hp"
+                      "views.minipc.architecture_selection_view.x86_64_examples"
                     )}
                   </p>
                 </div>
+                ${this._renderCheck(this._x86Device)}
               </wa-radio>
             `
           : ""}
@@ -375,15 +389,16 @@ export class MiniPCArchitectureSelectionView extends LitElement {
                   </p>
                   <p class="option-description">
                     ${localize(
-                      "views.minipc.architecture_selection_view.arm64_systems_with_uefi_firmware_supported_by_home_assistant_os"
+                      "views.minipc.architecture_selection_view.arm64_description"
                     )}
                   </p>
                   <p class="option-examples">
                     ${localize(
-                      "views.minipc.architecture_selection_view.examples_ampere_based_servers_and_other_uefi_arm64_machines_a_raspberry_pi_"
+                      "views.minipc.architecture_selection_view.arm64_examples"
                     )}
                   </p>
                 </div>
+                ${this._renderCheck(this._arm64Device)}
               </wa-radio>
             `
           : ""}
@@ -391,16 +406,23 @@ export class MiniPCArchitectureSelectionView extends LitElement {
       ${getPlatform() === "macos"
         ? html`<p class="mac-note">
             ${localizeContent(
-              "views.minipc.architecture_selection_view.want_home_assistant_on_this_mac_itself_start_over_and_choose_value_to_run_i",
+              "views.minipc.architecture_selection_view.this_mac_note",
               {
-                value0: html`<strong
-                  >${localize("components.app_shell.virtual_machine")}</strong
+                option: html`<strong
+                  >${localize("common.virtual_machine")}</strong
                 >`,
               }
             )}
           </p>`
         : ""}
     `;
+  }
+
+  // Screen readers already hear which radio is checked
+  private _renderCheck(device: Device) {
+    return device.id === this._selectedDeviceId
+      ? html`<span class="selected-indicator" aria-hidden="true">✓</span>`
+      : nothing;
   }
 
   private _onDeviceChange(e: Event) {
@@ -413,10 +435,12 @@ export class MiniPCArchitectureSelectionView extends LitElement {
 
   private _onSelectDevice(device: Device) {
     this._selectedDeviceId = device.id;
-    wizardState.setSelection("device", device.id);
-    wizardState.setSelection("deviceName", device.name);
-    wizardState.setSelection("deviceImage", device.image_url || "");
-    wizardState.setSelection("deviceConfig", device.haos);
+    wizardState.setSelections({
+      device: device.id,
+      deviceName: device.name,
+      deviceImage: device.image_url || "",
+      deviceConfig: device.haos,
+    });
   }
 }
 

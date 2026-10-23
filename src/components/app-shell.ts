@@ -1,7 +1,6 @@
 import { localize } from "../localization/localize.js";
 import { LitElement, html, css, nothing } from "lit";
 import { customElement, query, state } from "lit/decorators.js";
-import "./fab-button.js";
 
 // Import views
 import "../views/welcome-view.js";
@@ -40,7 +39,6 @@ import {
 import type { ConfirmDialog } from "./confirm-dialog.js";
 import "./confirm-dialog.js";
 import "./info-dialog.js";
-import "./diagnostics-actions.js";
 
 // Import state
 import {
@@ -49,9 +47,12 @@ import {
   type WizardState,
 } from "../state/wizard-state.js";
 import { listBlockDevices, onCloseBlocked, quitAnyway } from "../api/index.js";
-import { findDrive, readDriveSelection } from "../utils/drive-selection.js";
+import {
+  clearDriveSelection,
+  findDrive,
+  readDriveSelection,
+} from "../utils/drive-selection.js";
 import { logFrontendError } from "../utils/diagnostics.js";
-import { openExternalUrl } from "../utils/external-url.js";
 
 export type ViewName =
   | "welcome"
@@ -59,10 +60,6 @@ export type ViewName =
   | "other-options"
   | "connection-check"
   | "wizard";
-
-// mdi:toolbox-outline
-const mdiToolboxOutline =
-  "M18 16H16V15H8V16H6V15H2V20H22V15H18V16M20 8H17V6C17 4.9 16.1 4 15 4H9C7.9 4 7 4.9 7 6V8H4C2.9 8 2 8.9 2 10V14H6V12H8V14H16V12H18V14H22V10C22 8.9 21.1 8 20 8M15 8H9V6H15V8Z";
 
 @customElement("app-shell")
 export class AppShell extends LitElement {
@@ -78,13 +75,6 @@ export class AppShell extends LitElement {
 
     :host > * {
       flex: 1;
-    }
-
-    diagnostics-actions {
-      position: absolute;
-      bottom: 1rem;
-      left: 1rem;
-      z-index: 1;
     }
   `;
 
@@ -105,6 +95,10 @@ export class AppShell extends LitElement {
 
   @state()
   private _installRetryable = false;
+
+  /** The failed install needs a new Proxmox login before it can go on */
+  @state()
+  private _installReconnect = false;
 
   // What the running `beforeNext` of a step started from: the flow, or the
   // selections. Leaving the flow (or changing a choice) replaces it, so a run
@@ -146,8 +140,13 @@ export class AppShell extends LitElement {
   private _stopCloseListener?: Promise<() => void>;
   private _pendingFlow?: WizardFlow;
 
+  /** The screen the latest single click landed on. */
+  private _clickedScreen?: string;
+
   connectedCallback() {
     super.connectedCallback();
+    // Capturing, so it runs before the controls on the screen
+    this.addEventListener("click", this._onClick, true);
     this._unsubscribe = wizardState.subscribe((state) => {
       this._wizardState = state;
     });
@@ -165,6 +164,7 @@ export class AppShell extends LitElement {
 
   disconnectedCallback() {
     super.disconnectedCallback();
+    this.removeEventListener("click", this._onClick, true);
     this._unsubscribe?.();
     void this._stopCloseListener?.then((stop) => stop());
   }
@@ -174,10 +174,6 @@ export class AppShell extends LitElement {
 
     return html`
       ${this._renderView()}
-      ${this._currentView === "welcome" ? this._renderToolboxButton() : ""}
-      ${this._currentView === "welcome"
-        ? html`<diagnostics-actions about></diagnostics-actions>`
-        : ""}
       <confirm-dialog
         ?open=${this._showConfirmDialog}
         .driveName=${selections.driveName || ""}
@@ -267,7 +263,13 @@ export class AppShell extends LitElement {
     const step = wizardStep(flow, currentStep?.id);
     const nextDisabled = !this._isReady(step);
     const nextLabel = this._getNextLabel(currentStep?.id);
-    const busy = this._isBusy(step) ? step?.beforeNext?.label() : undefined;
+    // What Next waits for. It says so and keeps the focus: disabled, it
+    // would drop the focus to the page
+    const busy = this._isBusy(step)
+      ? step?.beforeNext?.label?.()
+      : this._verifyingDrive
+        ? localize("components.app_shell.checking_drive")
+        : undefined;
 
     // A running flash keeps only Cancel, until it is stopping
     const flashRunning = currentStep?.id === "flash" && !this._flashError;
@@ -275,7 +277,7 @@ export class AppShell extends LitElement {
     // A running VM install keeps only Cancel, while it can still stop
     const vmRunning = this._isVmInstallRunning();
 
-    // Determine when to hide footer (during active processes)
+    // Determine when to hide the footer's buttons (during active processes)
     // Once the VM runs, waiting for Home Assistant can take an hour, and
     // leaving no longer leaves anything half done
     const hideFooter =
@@ -297,18 +299,13 @@ export class AppShell extends LitElement {
       flashRunning ||
       vmRunning ||
       currentStep?.id === "method" ||
-      (currentStep?.id === "install" &&
-        (this._flashError || this._vmInstallError) &&
-        !this._installRetryable);
+      (currentStep?.id === "install" && this._installStuck());
 
     return html`
       <wizard-shell
-        .nextDisabled=${nextDisabled || !!busy || this._verifyingDrive}
-        .nextLabel=${busy
-          ? busy
-          : this._verifyingDrive
-            ? localize("components.app_shell.checking_drive")
-            : nextLabel}
+        .nextDisabled=${nextDisabled}
+        .nextBusy=${!!busy}
+        .nextLabel=${busy ?? nextLabel}
         .hideFooter=${hideFooter}
         .hideBack=${hideBack}
         .hideNext=${hideNext}
@@ -332,11 +329,13 @@ export class AppShell extends LitElement {
   private _getNextLabel(stepId: string | undefined): string {
     if (stepId === "flash" && this._flashError) {
       return this._installRetryable
-        ? localize("components.app_shell.try_again")
+        ? localize("common.try_again")
         : localize("components.app_shell.choose_another_drive");
     }
     if (stepId === "install" && this._vmInstallError) {
-      return localize("components.app_shell.try_again");
+      return this._installReconnect
+        ? localize("proxmox.reconnect")
+        : localize("common.try_again");
     }
     if (stepId === "confirm") {
       return localize("common.install");
@@ -371,6 +370,28 @@ export class AppShell extends LitElement {
     return (this._wizardShell?.firstElementChild ??
       null) as WizardStepView | null;
   }
+
+  /** What is on screen: the view, and in the wizard, its step. */
+  private get _screen(): string {
+    return this._currentView === "wizard"
+      ? `wizard/${wizardState.currentStep?.id}`
+      : this._currentView;
+  }
+
+  // A click that changes the screen does so before the second click of a
+  // double-click arrives, so that one would act on whatever the next screen
+  // has in the same spot: Back on the first step and then Back on the path
+  // selection went all the way to the welcome screen, and Next on a
+  // configured VM went past its confirmation into the install. `detail`
+  // counts the clicks; keyboard activation reports 0.
+  private _onClick = (event: MouseEvent) => {
+    if (event.detail < 2) {
+      this._clickedScreen = this._screen;
+    } else if (this._screen !== this._clickedScreen) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  };
 
   private _onNavigate(e: CustomEvent<{ view: ViewName }>) {
     this._currentView = e.detail.view;
@@ -427,27 +448,39 @@ export class AppShell extends LitElement {
     this._flashError = false;
     this._vmInstallError = false;
     this._installRetryable = false;
+    this._installReconnect = false;
+  }
+
+  /** Whether the failed install can neither be tried again nor resumed. */
+  private _installStuck(): boolean {
+    return (
+      (this._flashError || this._vmInstallError) &&
+      !this._installRetryable &&
+      !this._installReconnect
+    );
   }
 
   private async _onWizardNext() {
     const currentStep = wizardState.currentStep;
     const flow = this._wizardState.currentFlow;
 
-    if (
-      currentStep?.id === "install" &&
-      (this._flashError || this._vmInstallError) &&
-      !this._installRetryable
-    )
-      return;
+    if (currentStep?.id === "install" && this._installStuck()) return;
 
     // Handle retry on flash error
     if (currentStep?.id === "flash" && this._flashError) {
       this._flashError = false;
       if (!this._installRetryable) {
-        this._goToDriveStep();
+        this._goToStep("drive");
         return;
       }
       this._stepView?.retry?.();
+      return;
+    }
+
+    // A Proxmox session that stopped working: log in again, then carry on
+    if (currentStep?.id === "install" && this._installReconnect) {
+      this._resetErrorState();
+      this._goToStep("connection");
       return;
     }
 
@@ -460,8 +493,8 @@ export class AppShell extends LitElement {
 
     const step = wizardStep(flow, currentStep?.id);
     if (step?.beforeNext) {
-      // Next is only clickable while enabled, but the step must never proceed
-      // while it isn't ready, whatever triggered the event
+      // Next takes no clicks while it isn't ready or is busy, but the step
+      // must never proceed meanwhile, whatever triggered the event
       const view = this._stepView;
       if (!view || this._isBusy(step) || !this._isReady(step)) return;
       const token = this._pendingToken(step);
@@ -482,6 +515,8 @@ export class AppShell extends LitElement {
       currentStep?.id === "confirm" &&
       (flow === "sbc" || flow === "minipc" || flow === "ha-hardware")
     ) {
+      // Next is busy with this already, whatever else sent the event
+      if (this._verifyingDrive) return;
       if (!(await this._verifySelectedDrive())) {
         return;
       }
@@ -489,11 +524,18 @@ export class AppShell extends LitElement {
       return;
     }
 
+    const skipTo = step?.skipTo?.(wizardState.getState().selections);
+    const skipIndex = skipTo
+      ? this._wizardState.steps.findIndex(({ id }) => id === skipTo)
+      : -1;
+
     if (wizardState.isLastStep) {
       // Flow complete - go back to welcome
       this._resetErrorState();
       wizardState.reset();
       this._currentView = "welcome";
+    } else if (skipIndex >= 0) {
+      wizardState.goToStep(skipIndex);
     } else {
       wizardState.nextStep();
     }
@@ -501,8 +543,8 @@ export class AppShell extends LitElement {
 
   /**
    * Confirm the selected path still belongs to the same device; the OS can
-   * hand it to another one. On failure, go back to the drive step, which
-   * re-scans and explains why the selection was cleared.
+   * hand it to another one. On failure, clear the selection and go back to
+   * the drive step, which re-scans and explains why it was cleared.
    *
    * Resolves false without acting if the user navigated, cancelled or changed
    * the selection while the scan ran: the result no longer applies.
@@ -538,15 +580,16 @@ export class AppShell extends LitElement {
     }
 
     if (!found) {
-      this._goToDriveStep();
+      // Have the user pick again, rather than let Next carry it back here
+      clearDriveSelection();
+      wizardState.setSelection("driveSelectionLost", true);
+      this._goToStep("drive");
     }
     return found;
   }
 
-  private _goToDriveStep() {
-    const index = this._wizardState.steps.findIndex(
-      (step) => step.id === "drive"
-    );
+  private _goToStep(id: string) {
+    const index = this._wizardState.steps.findIndex((step) => step.id === id);
     if (index >= 0) {
       wizardState.goToStep(index);
     }
@@ -603,6 +646,7 @@ export class AppShell extends LitElement {
 
   private _onFlashComplete() {
     this._showStopDialog = false;
+    this._showQuitDialog = false;
     this._stoppingFlash = false;
     // The password is on the drive now; the success step needs only the name
     const wifi = this._wizardState.selections.wifi;
@@ -614,6 +658,7 @@ export class AppShell extends LitElement {
 
   private _onFlashError(event: CustomEvent<{ retryable?: boolean }>) {
     this._showStopDialog = false;
+    this._showQuitDialog = false;
     this._stoppingFlash = false;
     this._installRetryable = event.detail?.retryable === true;
     this._flashError = true;
@@ -685,27 +730,22 @@ export class AppShell extends LitElement {
   }
 
   private _onVmInstallComplete() {
+    this._showQuitDialog = false;
     // Advance to success step after the UTM or Proxmox install completes
     wizardState.nextStep();
   }
 
-  private _onVmInstallError(event: CustomEvent<{ retryable?: boolean }>) {
+  private _onVmInstallError(
+    event: CustomEvent<{ retryable?: boolean; reconnect?: boolean }>
+  ) {
+    // The install ended, so there is nothing left to stop, leave or quit,
+    // whether or not the view said so first
+    this._showStopDialog = false;
+    this._showLeaveDialog = false;
+    this._showQuitDialog = false;
     this._installRetryable = event.detail?.retryable === true;
+    this._installReconnect = event.detail?.reconnect === true;
     this._vmInstallError = true;
-  }
-
-  private _renderToolboxButton() {
-    return html`
-      <fab-button
-        .path=${mdiToolboxOutline}
-        label=${localize("components.app_shell.open_home_toolbox")}
-        @click=${this._onToolboxOpen}
-      ></fab-button>
-    `;
-  }
-
-  private async _onToolboxOpen() {
-    await openExternalUrl("https://toolbox.openhomefoundation.org/");
   }
 }
 

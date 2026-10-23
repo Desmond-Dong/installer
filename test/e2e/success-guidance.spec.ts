@@ -19,7 +19,7 @@ for (const width of [1100, 390]) {
       await page.setViewportSize({ width, height: 850 });
       // The Vite development build uses browser mocks when Tauri is absent.
       await page.goto("/");
-      await page.locator("welcome-view wa-button").click();
+      await page.getByRole("button", { name: "Let's go" }).click();
       if (scenario.device.startsWith("generic-")) {
         await page.locator('option-card[heading="Generic (mini) PC"]').click();
         await page
@@ -142,7 +142,7 @@ test("a Wi-Fi network set on its own step replaces the cable step", async ({
 }) => {
   test.setTimeout(60000);
   await page.goto("/");
-  await page.locator("welcome-view wa-button").click();
+  await page.getByRole("button", { name: "Let's go" }).click();
   await page
     .locator('option-card[heading="Raspberry Pi & other boards"]')
     .click();
@@ -158,7 +158,13 @@ test("a Wi-Fi network set on its own step replaces the cable step", async ({
   await step.locator("#wifi-ssid").fill("Home");
   await step.locator("#wifi-password").fill("1234567");
   await expect(next(page)).toHaveJSProperty("disabled", true);
+  // Leaving the field says why Next is off
+  const tooShort = step.getByText("Use at least 8 characters.");
+  await expect(tooShort).toHaveCount(0);
+  await step.locator("#wifi-password").blur();
+  await expect(tooShort).toBeVisible();
   await step.locator("#wifi-password").fill("12345678");
+  await expect(tooShort).toHaveCount(0);
   await expect(next(page)).toHaveJSProperty("disabled", false);
   await next(page).click();
 

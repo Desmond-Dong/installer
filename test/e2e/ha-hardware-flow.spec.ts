@@ -23,7 +23,7 @@ async function nextFromDevice(page: Page) {
 
 async function openHaHardware(page: Page) {
   await page.goto("/");
-  await page.locator("welcome-view wa-button").click();
+  await page.getByRole("button", { name: "Let's go" }).click();
   await page.locator('option-card[heading="Home Assistant hardware"]').click();
   await expect(
     page.locator("ha-hardware-device-selection-view device-card").first()
@@ -63,7 +63,7 @@ const scenarios = [
   {
     value: "ha-yellow-cm5",
     name: "Home Assistant Yellow with CM5",
-    connect: "sudo ./rpiboot -d mass-storage-gadget64",
+    connect: "RPi-MSD",
     version: "Version 16.3",
     notice: "Home Assistant included",
     steps: ["JP1 back to UART", "starts Home Assistant OS from the eMMC"],
@@ -83,7 +83,7 @@ const scenarios = [
 test.describe("Home Assistant hardware flow", () => {
   test("the option is offered on path selection", async ({ page }) => {
     await page.goto("/");
-    await page.locator("welcome-view wa-button").click();
+    await page.getByRole("button", { name: "Let's go" }).click();
 
     const card = page.locator('option-card[heading="Home Assistant hardware"]');
     await expect(card).toBeVisible();
