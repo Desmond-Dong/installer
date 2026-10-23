@@ -58,6 +58,15 @@ import { renderRetryButton } from "../../utils/load-state.js";
 // MDI icons only this view uses; utils/icons.ts has the shared ones
 const vmIdIcon =
   "M9,7H11V15H9V7M13,7H15V15H13V7M5,3H19A2,2 0 0,1 21,5V19A2,2 0 0,1 19,21H5A2,2 0 0,1 3,19V5A2,2 0 0,1 5,3M5,5V19H19V5H5Z";
+const mdiInformationOutline =
+  "M11,9H13V7H11M12,20C7.59,20 4,16.41 4,12C4,7.59 7.59,4 12,4C16.41,4 20,7.59 20,12C20,16.41 16.41,20 12,20M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M11,17H13V11H11V17Z";
+
+/** A line of the hint next to Next */
+interface NextHint {
+  text: string;
+  /** Try again found it, and its row takes the focus to say so */
+  focused: boolean;
+}
 
 function renderIcon(path: string) {
   return html`<svg viewBox="0 0 24 24"><path d=${path} /></svg>`;
@@ -104,6 +113,41 @@ export class ProxmoxConfigureView extends LitElement {
       .error-text {
         font-size: 0.875rem;
         color: var(--ha-error-color, #db4437);
+      }
+
+      /* Last on the step, and at its foot when the step is short, so it is
+         next to the Next it explains. Empty, it takes no room. */
+      .next-hint {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.5rem;
+        width: 100%;
+        max-width: 500px;
+        margin-top: auto;
+        font-size: 0.875rem;
+        line-height: 1.4;
+        color: var(--ha-secondary-text-color, #727272);
+        overflow-wrap: anywhere;
+      }
+
+      .next-hint.shown {
+        padding-top: 1.5rem;
+      }
+
+      .next-hint svg {
+        width: 20px;
+        height: 20px;
+        flex-shrink: 0;
+        fill: currentColor;
+      }
+
+      .next-hint p {
+        margin: 0;
+      }
+
+      .next-hint p + p,
+      .next-hint [role="status"]:not(:empty) + p {
+        margin-top: 0.25rem;
       }
     `,
     importStorageStyles,
@@ -431,42 +475,48 @@ export class ProxmoxConfigureView extends LitElement {
   }
 
   render() {
-    const lookup = this._lookup;
-    const error = lookup.error ?? this._retrying;
-    if (error) {
-      return html`
-        ${renderStepHeading(
-          localize("common.vm.configure_virtual_machine"),
-          localize("views.proxmox.proxmox_configure_view.subtitle")
-        )}
-        <div class="config-card">
-          <!-- Empty while trying again, so the same failure is read out again -->
-          <p class="error-text" role="alert" style="overflow-wrap: anywhere;">
-            ${this._retrying ? "" : error.message}
-          </p>
-          ${renderErrorHelp()}
-          ${lookup.sessionExpired
-            ? html`<wa-button
-                class="reconnect"
-                variant="brand"
-                @click=${this._reconnect}
-              >
-                ${localize("proxmox.reconnect")}
-              </wa-button>`
-            : error.retryable
-              ? renderRetryButton(!!this._retrying, () => this._retry(), {
-                  className: "load-retry",
-                })
-              : ""}
-        </div>
-      `;
-    }
-
+    const error = this._lookup.error ?? this._retrying;
+    // One template either way, so the hint's live region stays in place while
+    // a failed lookup gives way to the form, and is heard once it fills
     return html`
       ${renderStepHeading(
         localize("common.vm.configure_virtual_machine"),
         localize("views.proxmox.proxmox_configure_view.subtitle")
       )}
+      ${error ? this._renderLookupError(error) : this._renderForm()}
+      ${this._renderNextHint()}
+    `;
+  }
+
+  /** A lookup that failed, in place of the form */
+  private _renderLookupError(error: InstallerError) {
+    return html`
+      <div class="config-card">
+        <!-- Empty while trying again, so the same failure is read out again -->
+        <p class="error-text" data-focus-alert style="overflow-wrap: anywhere;">
+          ${this._retrying ? "" : error.message}
+        </p>
+        ${renderErrorHelp()}
+        ${this._lookup.sessionExpired
+          ? html`<wa-button
+              class="reconnect"
+              variant="brand"
+              @click=${this._reconnect}
+            >
+              ${localize("proxmox.reconnect")}
+            </wa-button>`
+          : error.retryable
+            ? renderRetryButton(!!this._retrying, () => this._retry(), {
+                className: "load-retry",
+              })
+            : ""}
+      </div>
+    `;
+  }
+
+  private _renderForm() {
+    const lookup = this._lookup;
+    return html`
       <p class="sr-only" role="status">${lookup.importStorage.status}</p>
 
       <div class="config-card">
@@ -561,9 +611,14 @@ export class ProxmoxConfigureView extends LitElement {
               lookup.storages.length === 0)
               ? // Next needs storage for the VM disk, so say how to get one.
                 // Like Refresh storage, retrying waits while Import is enabled.
-                // Try again stays, busy, while it reads; the alert is empty
-                // meanwhile, so the same result is read out again.
-                html`<p class="error-text" role="alert">
+                // Only what Try again finds takes the focus; a lookup nobody
+                // asked for is said near Next. Try again stays, busy, while it
+                // reads; the text is empty meanwhile, so the same result is
+                // read out again.
+                html`<p
+                    class="error-text"
+                    ?data-focus-alert=${lookup.askedFrom === "storage"}
+                  >
                     ${lookup.reloadFrom === "storage"
                       ? ""
                       : localize(
@@ -622,9 +677,13 @@ export class ProxmoxConfigureView extends LitElement {
                     lookup.bridgesNode === lookup.selectedNode &&
                     !lookup.error)
                     ? // A lookup error already offers its own retry above.
-                      // Empty while trying again, so the same result is read
-                      // out again.
-                      html`<p class="error-text" role="alert">
+                      // Like the storage one, it takes the focus only when
+                      // Try again finds it, and is empty while trying again,
+                      // so the same result is read out again.
+                      html`<p
+                          class="error-text"
+                          ?data-focus-alert=${lookup.askedFrom === "bridges"}
+                        >
                           ${lookup.reloadFrom === "bridges"
                             ? ""
                             : lookup.selectedNode
@@ -704,11 +763,89 @@ export class ProxmoxConfigureView extends LitElement {
         </wa-input>
       </wa-details>
       ${this._checkError
-        ? html`<p class="error-text" role="alert">
+        ? html`<p class="error-text" data-focus-alert>
             ${this._checkError.message}
           </p>`
         : ""}
     `;
+  }
+
+  /**
+   * What the latest lookup found missing that Next needs. The disabled
+   * button can't say, and the row that does may be scrolled away.
+   */
+  private _nextHints(): NextHint[] {
+    const lookup = this._lookup;
+    if (!lookup.loaded) return [];
+    const node = lookup.selectedNode;
+    // The bridge row's Try again, whose row also says when no node is online
+    const bridgeRetried =
+      lookup.askedFrom === "bridges" && lookup.bridgesNode === node;
+    if (!node) {
+      return [
+        {
+          text: localize(
+            "views.proxmox.proxmox_configure_view.next_hint_no_node"
+          ),
+          focused: bridgeRetried,
+        },
+      ];
+    }
+    const hints: NextHint[] = [];
+    if (lookup.storagesNode === node && lookup.storages.length === 0) {
+      hints.push({
+        text: localize(
+          "views.proxmox.proxmox_configure_view.next_hint_no_storage",
+          { node }
+        ),
+        focused: lookup.askedFrom === "storage",
+      });
+    }
+    if (lookup.bridgesNode === node && lookup.bridges.length === 0) {
+      hints.push({
+        text: localize(
+          "views.proxmox.proxmox_configure_view.next_hint_no_bridge",
+          { node }
+        ),
+        focused: bridgeRetried,
+      });
+    }
+    if (lookup.storagesNode === node && !lookup.importStorage.ready) {
+      hints.push({
+        text: localize(
+          "views.proxmox.proxmox_configure_view.next_hint_no_import_storage",
+          { node }
+        ),
+        focused: false,
+      });
+    }
+    return hints;
+  }
+
+  /**
+   * The hint is read out through a polite status, so a lookup that finishes
+   * while someone types says what it found without taking the focus from
+   * them. The status is always there, so it is in place before it says
+   * anything. What a row takes the focus to say stays out of it, so it isn't
+   * read out twice.
+   */
+  private _renderNextHint() {
+    const hints = this._nextHints();
+    const lines = (focused: boolean) =>
+      hints
+        .filter((hint) => hint.focused === focused)
+        .map((hint) => html`<p>${hint.text}</p>`);
+    return html`<div class="next-hint ${hints.length ? "shown" : ""}">
+      ${hints.length
+        ? html`<svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d=${mdiInformationOutline} />
+          </svg>`
+        : ""}
+      <div>
+        <div role="status">${lines(false)}</div>
+        ${lines(true)}
+      </div>
+    </div>`;
   }
 }
 
