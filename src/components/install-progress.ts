@@ -493,6 +493,7 @@ export class InstallProgress extends LitElement {
         </div>
         <h2>${this.description}</h2>
         <div class="details">
+          <slot></slot>
           <ol
             class="stages-indicator"
             aria-label=${localize(
