@@ -232,9 +232,17 @@ class WizardStateStore {
 
   previousStep() {
     if (this.state.currentStepIndex > 0) {
+      // [China mirror] The x86 USB installer route skips the architecture
+      // step on the way in; skip it again going out, so Back returns to the
+      // method choice instead of a step the route never offered.
+      const target =
+        this.state.steps[this.state.currentStepIndex]?.id === "drive" &&
+        this.state.selections.deviceConfig?.board === "x86-installer"
+          ? this.state.steps.findIndex((step) => step.id === "method")
+          : this.state.currentStepIndex - 1;
       this.state = {
         ...this.state,
-        currentStepIndex: this.state.currentStepIndex - 1,
+        currentStepIndex: target,
         selections: {
           ...this.state.selections,
           deviceCatalogReady: false,

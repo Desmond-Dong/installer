@@ -1,5 +1,9 @@
 import { expect } from "@open-wc/testing";
 import { wizardState } from "../../../src/state/wizard-state.js";
+import {
+  findInstaller,
+  installerConfig,
+} from "../../../src/views/ha-hardware/hardware.js";
 
 describe("wizard-state", () => {
   beforeEach(() => {
@@ -67,6 +71,20 @@ describe("wizard-state", () => {
 
     wizardState.previousStep();
     expect(wizardState.getState().currentStepIndex).to.equal(1);
+  });
+
+  it("returns the x86 USB installer route past the architecture step it skipped", () => {
+    wizardState.startFlow("minipc");
+    const installer = findInstaller("x86-installer")!;
+    wizardState.setSelection("deviceConfig", installerConfig(installer));
+    const driveIndex = wizardState
+      .getState()
+      .steps.findIndex((step) => step.id === "drive");
+    wizardState.goToStep(driveIndex);
+    wizardState.previousStep();
+    expect(
+      wizardState.getState().steps[wizardState.getState().currentStepIndex]?.id
+    ).to.equal("method");
   });
 
   it("does not go before first step", () => {
