@@ -53,7 +53,6 @@ test.describe("UTM Installation Flow", () => {
     });
     const wizardShell = page.locator("wizard-shell");
     await wizardShell.locator(".footer-left wa-button").click();
-    await page.getByRole("button", { name: "Let's go" }).click();
     const vmOption = page.locator('option-card[heading="Virtual machine"]');
     // Answered as an Apple silicon Mac, not one that can't run the VM
     await expect(vmOption).toContainText("in the free UTM app");
@@ -124,10 +123,9 @@ test.describe("UTM Installation Flow", () => {
 
     // Test cancel on step 1
     await wizardShell.locator(".footer-left wa-button").click();
-    await expect(page.locator("welcome-view")).toBeVisible();
+    await expect(page.locator("path-selection-view")).toBeVisible();
 
     // Restart flow
-    await page.getByRole("button", { name: "Let's go" }).click();
     const vmOption = page.locator('option-card[heading="Virtual machine"]');
     await expect(vmOption).toBeVisible();
     await vmOption.click();
@@ -135,7 +133,7 @@ test.describe("UTM Installation Flow", () => {
     // Test cancel on step 2
     await navigateToUtmStep2(page);
     await wizardShell.locator(".footer-left wa-button").click();
-    await expect(page.locator("welcome-view")).toBeVisible();
+    await expect(page.locator("path-selection-view")).toBeVisible();
   });
 
   test("complete end-to-end flow", async ({ page }) => {
@@ -177,12 +175,12 @@ test.describe("UTM Installation Flow", () => {
       timeout: 30000,
     });
 
-    // Return to welcome
+    // Done returns to the path selection
     await page
       .locator("wizard-shell")
       .locator(".footer-right wa-button")
       .click();
-    await expect(page.locator("welcome-view")).toBeVisible();
+    await expect(page.locator("path-selection-view")).toBeVisible();
   });
 });
 

@@ -132,7 +132,7 @@ for (const scenario of [
     });
     if (scenario.recovery === "cancel") {
       await page.locator("wizard-shell .footer-left wa-button").click();
-      await expect(page.locator("welcome-view")).toBeVisible();
+      await expect(page.locator("path-selection-view")).toBeVisible();
       return;
     }
     await next(page).click();
@@ -164,6 +164,6 @@ for (const scenario of [
     });
     await expect(next(page)).toHaveText("Done");
     await next(page).click();
-    await expect(page.locator("welcome-view")).toBeVisible();
+    await expect(page.locator("path-selection-view")).toBeVisible();
   });
 }

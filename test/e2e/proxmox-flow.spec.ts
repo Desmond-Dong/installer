@@ -34,14 +34,13 @@ test.describe("Proxmox Installation Flow", () => {
     // Test cancel on step 1
     const wizardShell = page.locator("wizard-shell");
     await wizardShell.locator(".footer-left wa-button").click();
-    await expect(page.locator("welcome-view")).toBeVisible();
+    await expect(page.locator("path-selection-view")).toBeVisible();
 
     // Restart and test cancel on step 2
-    await page.getByRole("button", { name: "Let's go" }).click();
     await page.locator('option-card[heading="Proxmox server"]').click();
     await navigateToProxmoxStep2(page);
     await wizardShell.locator(".footer-left wa-button").click();
-    await expect(page.locator("welcome-view")).toBeVisible();
+    await expect(page.locator("path-selection-view")).toBeVisible();
   });
 
   test("complete end-to-end flow", async ({ page }) => {
@@ -86,12 +85,12 @@ test.describe("Proxmox Installation Flow", () => {
       timeout: 30000,
     });
 
-    // Return to welcome
+    // Done returns to the path selection
     await page
       .locator("wizard-shell")
       .locator(".footer-right wa-button")
       .click();
-    await expect(page.locator("welcome-view")).toBeVisible();
+    await expect(page.locator("path-selection-view")).toBeVisible();
   });
 });
 
