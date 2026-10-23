@@ -4,11 +4,9 @@ import {
   ViewAccessibility,
   reducedMotionStyles,
 } from "../../utils/view-accessibility.js";
-import { customElement, state } from "lit/decorators.js";
+import { customElement } from "lit/decorators.js";
 import { wizardState } from "../../state/wizard-state.js";
-import { openExternalUrl } from "../../utils/external-url.js";
 import { findInstaller, installerConfig } from "../ha-hardware/hardware.js";
-import "../../components/info-dialog.js";
 import "../../components/option-card.js";
 import { renderStepHeading, stepStyles } from "../../utils/step-styles.js";
 
@@ -29,9 +27,6 @@ export class MiniPCSetupMethodView extends LitElement {
     `,
   ];
 
-  @state()
-  private _showUsbDialog = false;
-
   render() {
     return html`
       ${renderStepHeading(
@@ -40,16 +35,6 @@ export class MiniPCSetupMethodView extends LitElement {
       )}
 
       <div class="options">
-        <option-card
-          horizontal
-          heading=${localize("views.minipc.setup_method_view.usb_installer")}
-          description=${localize(
-            "views.minipc.setup_method_view.burn_the_bootable_installer_onto_a_usb_stick_and_boot_it_on_your_intel_amd"
-          )}
-          icon="usb-boot"
-          @click=${this._onUsbInstallerBoot}
-          ><span slot="end" aria-hidden="true">→</span></option-card
-        >
         <option-card
           horizontal
           heading=${localize(
@@ -75,20 +60,6 @@ export class MiniPCSetupMethodView extends LitElement {
           ><span slot="end" aria-hidden="true">→</span></option-card
         >
       </div>
-
-      <info-dialog
-        ?open=${this._showUsbDialog}
-        heading=${localize(
-          "views.minipc.setup_method_view.usb_boot_installation"
-        )}
-        message=${localize(
-          "views.minipc.setup_method_view.boot_from_usb_unsupported"
-        )}
-        primary-label=${localize("common.view_instructions")}
-        secondary-label=${localize("common.go_back")}
-        @dialog-primary=${this._onOpenDocs}
-        @dialog-secondary=${this._onCloseDialog}
-      ></info-dialog>
     `;
   }
 
@@ -97,10 +68,12 @@ export class MiniPCSetupMethodView extends LitElement {
   }
 
   /**
-   * Start the bootable x86-64 installer: skip the architecture step (the ISO
-   * targets Intel/AMD machines) and go straight to picking the USB stick.
+   * [China mirror] "Boot from USB" is a fully supported installation now:
+   * burn the x86-64 installer ISO from the China mirror onto a USB stick and
+   * boot it on the mini PC. Skip the architecture step (the ISO targets
+   * Intel/AMD machines) and go straight to picking the USB stick.
    */
-  private _onUsbInstallerBoot() {
+  private _onUsbBoot() {
     const installer = findInstaller("x86-installer")!;
     wizardState.setSelection("device", installer.board);
     wizardState.setSelection(
@@ -113,21 +86,6 @@ export class MiniPCSetupMethodView extends LitElement {
     if (driveStep >= 0) {
       wizardState.goToStep(driveStep);
     }
-  }
-
-  private _onUsbBoot() {
-    this._showUsbDialog = true;
-  }
-
-  private _onCloseDialog() {
-    this._showUsbDialog = false;
-  }
-
-  private async _onOpenDocs() {
-    this._showUsbDialog = false;
-    await openExternalUrl(
-      "https://www.home-assistant.io/installation/generic-x86-64"
-    );
   }
 }
 

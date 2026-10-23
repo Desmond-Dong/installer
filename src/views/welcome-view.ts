@@ -7,7 +7,14 @@ import {
 import { logFrontendError } from "../utils/diagnostics.js";
 import { customElement, state } from "lit/decorators.js";
 import { openExternalLink } from "../utils/external-url.js";
+import type WaSelect from "@home-assistant/webawesome/dist/components/select/select.js";
 import "@home-assistant/webawesome/dist/components/button/button.js";
+import "@home-assistant/webawesome/dist/components/select/select.js";
+import "@home-assistant/webawesome/dist/components/option/option.js";
+import {
+  readStoredLanguage,
+  setStoredLanguage,
+} from "../localization/initialize.js";
 import "../components/diagnostics-actions.js";
 
 @customElement("welcome-view")
@@ -86,7 +93,7 @@ export class WelcomeView extends LitElement {
         margin-top: auto;
         padding-top: 2rem;
         display: grid;
-        grid-template-columns: 1fr auto 1fr;
+        grid-template-columns: 1fr auto auto 1fr;
         align-items: center;
         gap: 1rem;
         font-size: 0.875rem;
@@ -96,6 +103,20 @@ export class WelcomeView extends LitElement {
       .report {
         justify-self: start;
         --diagnostics-link-color: var(--ha-secondary-text-color, #727272);
+      }
+
+      /* [China mirror] The manual language choice, styled as footer text. */
+      .language::part(form-control-label) {
+        display: none;
+      }
+
+      .language::part(combobox) {
+        border: none;
+        box-shadow: none;
+        background: none;
+        font: inherit;
+        color: inherit;
+        width: max-content;
       }
 
       .learn-more {
@@ -113,6 +134,7 @@ export class WelcomeView extends LitElement {
         }
 
         .report,
+        .language,
         .learn-more {
           justify-self: center;
         }
@@ -209,6 +231,19 @@ export class WelcomeView extends LitElement {
             alt=${localize("views.welcome_view.open_home_foundation")}
           />
         </a>
+        <wa-select
+          class="language"
+          size="s"
+          label=${localize("views.welcome_view.language")}
+          .value=${readStoredLanguage() ?? "auto"}
+          @change=${this._onLanguageChange}
+        >
+          <wa-option value="auto"
+            >${localize("views.welcome_view.language_auto")}</wa-option
+          >
+          <wa-option value="en">English</wa-option>
+          <wa-option value="zh-CN">中文（简体）</wa-option>
+        </wa-select>
         <a
           class="learn-more"
           href="https://www.home-assistant.io/installation/"
@@ -255,6 +290,13 @@ export class WelcomeView extends LitElement {
         composed: true,
       })
     );
+  }
+
+  /** [China mirror] Switch the UI language and restart with it applied. */
+  private _onLanguageChange(event: Event) {
+    const select = event.target as WaSelect;
+    setStoredLanguage(select.value === "auto" ? null : select.value);
+    location.reload();
   }
 
   disconnectedCallback() {

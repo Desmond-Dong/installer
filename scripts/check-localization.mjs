@@ -13,12 +13,17 @@ const catalog = JSON.parse(
     "utf8"
   )
 );
-const parameters = new Map();
-for (const [key, message] of Object.entries(catalog)) {
-  assert.equal(typeof message, "string", `${key}: messages must be plain text`);
+// Extracts the placeholder names of a message. Catalog values are plain text
+// with named ICU placeholders; `value0`-style names escape nothing.
+function auditNames(message, label) {
+  assert.equal(
+    typeof message,
+    "string",
+    `${label}: messages must be plain text`
+  );
   assert(
     !/<\/?[a-z][^>]*>/i.test(message),
-    `${key}: HTML belongs in Lit, not the catalog`
+    `${label}: HTML belongs in Lit, not the catalog`
   );
   const names = new Set();
   function visit(elements) {
@@ -36,10 +41,15 @@ for (const [key, message] of Object.entries(catalog)) {
   for (const name of names) {
     assert(
       !/^value\d+$/.test(name),
-      `${key}: name the {${name}} placeholder after what it holds`
+      `${label}: name the {${name}} placeholder after what it holds`
     );
   }
-  parameters.set(key, [...names].sort());
+  return [...names].sort();
+}
+
+const parameters = new Map();
+for (const [key, message] of Object.entries(catalog)) {
+  parameters.set(key, auditNames(message, key));
 }
 
 // A key under a file's namespace (views.sbc.success_view.title for
@@ -209,6 +219,26 @@ assert.deepEqual(
   [],
   "Unused catalog messages"
 );
+// [China mirror] Every other shipped catalog must cover the same keys with
+// the same placeholder contract as the English one.
+const otherCatalogs = ["zh.json"];
+for (const name of otherCatalogs) {
+  const translated = JSON.parse(
+    fs.readFileSync(path.join(root, "src/localization", name), "utf8")
+  );
+  assert.deepEqual(
+    Object.keys(translated).sort(),
+    Object.keys(catalog).sort(),
+    `${name}: must cover exactly the English keys`
+  );
+  for (const [key, message] of Object.entries(translated)) {
+    assert.deepEqual(
+      auditNames(message, `${name}: ${key}`),
+      parameters.get(key),
+      `${name}: ${key} placeholder mismatch`
+    );
+  }
+}
 console.log(
   `Checked ${used.size} catalog messages and every source placeholder contract.`
 );

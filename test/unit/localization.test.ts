@@ -40,6 +40,21 @@ describe("localization", () => {
     expect(getLanguage()).to.equal("en");
   });
 
+  it("ships the Simplified Chinese catalog and falls back for traditional", () => {
+    expect(resolveLanguage(["zh-CN"])).to.equal("zh-CN");
+    expect(resolveLanguage(["zh"])).to.equal("zh");
+    expect(resolveLanguage(["zh-Hans-CN"])).to.equal("zh-Hans-CN");
+    expect(resolveLanguage(["zh-TW"])).to.equal("en");
+    expect(resolveLanguage(["zh-Hant"])).to.equal("en");
+    expect(resolveLanguage(["zh-HK", "en-GB"])).to.equal("en-GB");
+    setLanguage(["zh-CN"]);
+    expect(localize("common.next")).to.equal("下一步");
+    expect(localize("components.vm_resources.cores", { count: 2 })).to.equal(
+      "2 核"
+    );
+    expect(localize("app.title")).to.equal("Home Assistant 安装器");
+  });
+
   it("does not let an unresponsive native locale command prevent startup", async () => {
     await detectLanguage(["en-GB"], () => new Promise(() => undefined));
     expect(getLanguage()).to.equal("en-GB");

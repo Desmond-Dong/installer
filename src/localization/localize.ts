@@ -1,17 +1,36 @@
 import { IntlMessageFormat, type PrimitiveType } from "intl-messageformat";
 import messages from "./en.json";
+import zhMessages from "./zh.json";
 
 export type MessageKey = keyof typeof messages;
 
+const catalogs: Record<string, typeof messages> = {
+  en: messages,
+  zh: zhMessages,
+};
+
 let language = "en";
 const formatters = new Map<MessageKey, IntlMessageFormat>();
+
+/** The catalog for the resolved language, falling back to the English one. */
+function catalog(): typeof messages {
+  return catalogs[language.toLowerCase().startsWith("zh") ? "zh" : "en"];
+}
 
 export function resolveLanguage(preferences: readonly string[]): string {
   for (const preference of preferences) {
     try {
       const [locale] = Intl.getCanonicalLocales(preference);
-      // English is the only shipped catalog. Preserve its regional formatting.
-      if (locale?.split("-")[0] === "en") return locale;
+      // English keeps its regional formatting. The Simplified Chinese
+      // catalog covers the remaining zh tags; traditional variants fall
+      // back rather than show the wrong script.
+      const tags = (locale ?? "").split("-");
+      if (tags[0] === "en") return locale!;
+      if (
+        tags[0] === "zh" &&
+        !/^(hant|tw|hk|mo)/.test((tags[1] ?? "").toLowerCase())
+      )
+        return locale!;
     } catch {
       // Invalid OS/browser locale tags must not prevent startup.
     }
@@ -32,9 +51,14 @@ function formatter(key: MessageKey): IntlMessageFormat {
   let result = formatters.get(key);
   if (!result) {
     // Catalog values are text, never HTML. Rich placeholders come from Lit code.
-    result = new IntlMessageFormat(messages[key], language, undefined, {
-      ignoreTag: true,
-    });
+    result = new IntlMessageFormat(
+      catalog()[key] ?? messages[key],
+      language,
+      undefined,
+      {
+        ignoreTag: true,
+      }
+    );
     formatters.set(key, result);
   }
   return result;
@@ -59,7 +83,7 @@ export function localizeBackend(
   if (
     typeof key !== "string" ||
     !key.startsWith("backend.") ||
-    !Object.prototype.hasOwnProperty.call(messages, key)
+    !Object.prototype.hasOwnProperty.call(catalog(), key)
   ) {
     return undefined;
   }

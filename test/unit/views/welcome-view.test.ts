@@ -81,11 +81,12 @@ describe("welcome-view", () => {
     expect(darkLogo).to.exist;
   });
 
-  it("puts Report a problem and Learn more in the footer", async () => {
+  it("puts Report a problem, the language switch, and Learn more in the footer", async () => {
     const el = await fixture<WelcomeView>(html`<welcome-view></welcome-view>`);
 
     const footer = el.shadowRoot!.querySelector(".welcome-footer")!;
     expect(footer.querySelector("diagnostics-actions.report")).to.exist;
+    expect(footer.querySelector("wa-select.language")).to.exist;
     expect(footer.querySelector(".learn-more")!.textContent!.trim()).to.equal(
       "Learn more"
     );

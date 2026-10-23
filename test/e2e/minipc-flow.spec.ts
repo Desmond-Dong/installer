@@ -68,85 +68,6 @@ test.describe("Mini PC Flow - Setup Method Selection", () => {
     await expect(usbBootOption).toContainText("bootable USB");
   });
 
-  test("clicking USB boot shows info dialog", async ({ page }) => {
-    await page.locator('option-card[heading="Generic (mini) PC"]').click();
-
-    const setupView = page.locator("minipc-setup-method-view");
-    const usbBootOption = setupView
-      .locator("option-card, wa-radio")
-      .filter({ hasText: "I need to boot from USB" });
-    await usbBootOption.click();
-
-    // Should show info dialog
-    const infoDialog = page.locator("minipc-setup-method-view info-dialog");
-    await expect(infoDialog).toBeVisible();
-    await expect(infoDialog).toContainText("USB boot installation");
-    await expect(infoDialog).toContainText("not supported");
-  });
-
-  test("USB boot dialog has View Instructions button", async ({ page }) => {
-    await page.locator('option-card[heading="Generic (mini) PC"]').click();
-
-    const setupView = page.locator("minipc-setup-method-view");
-    const usbBootOption = setupView
-      .locator("option-card, wa-radio")
-      .filter({ hasText: "I need to boot from USB" });
-    await usbBootOption.click();
-
-    const infoDialog = page.locator("minipc-setup-method-view info-dialog");
-    await expect(infoDialog).toBeVisible();
-
-    // Check for primary button (View Instructions)
-    const primaryButton = infoDialog.locator(
-      'wa-button[variant="brand"], button:has-text("View instructions")'
-    );
-    await expect(primaryButton).toBeVisible();
-  });
-
-  test("USB boot dialog can be closed with Go Back", async ({ page }) => {
-    await page.locator('option-card[heading="Generic (mini) PC"]').click();
-
-    const setupView = page.locator("minipc-setup-method-view");
-    const usbBootOption = setupView
-      .locator("option-card, wa-radio")
-      .filter({ hasText: "I need to boot from USB" });
-    await usbBootOption.click();
-
-    const infoDialog = page.locator("minipc-setup-method-view info-dialog");
-    await expect(infoDialog).toBeVisible();
-
-    // Click secondary button (Go Back). Target by appearance so it doesn't
-    // also match wa-dialog's built-in (neutral, plain) close button.
-    const secondaryButton = infoDialog.locator(
-      'wa-button[appearance="outlined"]'
-    );
-    await secondaryButton.click();
-
-    // Dialog should close, setup method view should still be visible
-    await expect(infoDialog).not.toBeVisible();
-    await expect(setupView).toBeVisible();
-  });
-
-  test("USB boot dialog can be dismissed with Escape", async ({ page }) => {
-    await page.locator('option-card[heading="Generic (mini) PC"]').click();
-
-    const setupView = page.locator("minipc-setup-method-view");
-    const usbBootOption = setupView
-      .locator("option-card, wa-radio")
-      .filter({ hasText: "I need to boot from USB" });
-    await usbBootOption.click();
-
-    const infoDialog = page.locator("minipc-setup-method-view info-dialog");
-    await expect(infoDialog).toBeVisible();
-
-    // Press Escape — exercises the real wa-dialog dismissal path
-    await page.keyboard.press("Escape");
-
-    // Dialog should close, setup method view should still be visible
-    await expect(infoDialog).not.toBeVisible();
-    await expect(setupView).toBeVisible();
-  });
-
   test("clicking connect drive navigates to architecture selection", async ({
     page,
   }) => {
@@ -164,17 +85,17 @@ test.describe("Mini PC Flow - Setup Method Selection", () => {
     ).toBeVisible();
   });
 
-  test("clicking the USB installer option skips architecture and picks drives", async ({
+  test("clicking the USB boot option skips architecture and picks drives", async ({
     page,
   }) => {
     await page.locator('option-card[heading="Generic (mini) PC"]').click();
 
     const setupView = page.locator("minipc-setup-method-view");
-    const usbInstallerOption = setupView
+    const usbBootOption = setupView
       .locator("option-card, wa-radio")
-      .filter({ hasText: "Install from a USB stick" });
-    await expect(usbInstallerOption).toBeVisible();
-    await usbInstallerOption.click();
+      .filter({ hasText: "I need to boot from USB" });
+    await expect(usbBootOption).toBeVisible();
+    await usbBootOption.click();
 
     // The installer ISO targets Intel/AMD machines only, so there is no
     // architecture step; the next choice is which USB stick to write.
