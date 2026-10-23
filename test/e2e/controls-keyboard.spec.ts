@@ -39,7 +39,10 @@ test("Mini PC choices work with Tab, Space, and arrow keys", async ({
   // skips the architecture step, because the ISO is Intel/AMD only, and
   // lands among the drives. Going back returns to the method choice.
   await expect(page.locator("drive-selection-view")).toBeVisible();
-  await activate(page, page.getByRole("button", { name: "Back", exact: true }));
+  await activate(
+    page,
+    page.getByRole("button", { name: "Back", exact: false })
+  );
   await activate(
     page,
     page.getByRole("button", { name: "I can connect the drive" })
