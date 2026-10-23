@@ -8,6 +8,7 @@ import {
 import { MINIPC_STEPS, wizardState } from "../../state/wizard-state.js";
 import { clearDriveSelection } from "../../utils/drive-selection.js";
 import type { HaosConfig } from "../../api/types.js";
+import { goToNextStep } from "../../components/wizard-steps.js";
 import "../../components/option-card.js";
 
 /** Drive rules for the stick: removable and 2 GB or more (the drive list allows 5% less). */
@@ -103,11 +104,7 @@ export class MiniPCMediaView extends LitElement {
     );
     wizardState.setSteps(MINIPC_STEPS[media]);
     wizardState.setSelection("liveMedia", media);
-    // The pick stands in for Next, so it moves on the way Next does, through
-    // the app shell
-    this.dispatchEvent(
-      new CustomEvent("wizard-next", { bubbles: true, composed: true })
-    );
+    goToNextStep(this);
   }
 }
 

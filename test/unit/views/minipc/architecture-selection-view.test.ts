@@ -5,7 +5,7 @@ import {
   html,
   waitUntil,
 } from "@open-wc/testing";
-import type WaRadio from "@home-assistant/webawesome/dist/components/radio/radio.js";
+import type { OptionCard } from "../../../../src/components/option-card.js";
 import "../../../../src/views/minipc/architecture-selection-view.js";
 import type { MiniPCArchitectureSelectionView } from "../../../../src/views/minipc/architecture-selection-view.js";
 import { MOCK_MANIFEST } from "../../../../src/api/mock-data.js";
@@ -71,7 +71,7 @@ describe("minipc-architecture-selection-view focus", () => {
     manifest.resolve(MOCK_MANIFEST);
     await settle();
     await el.updateComplete;
-    expect(el.shadowRoot!.querySelectorAll("wa-radio")).to.have.length(2);
+    expect(el.shadowRoot!.querySelectorAll("option-card")).to.have.length(2);
     expect(document.activeElement).to.equal(button);
   });
 });
@@ -104,24 +104,27 @@ describe("minipc-architecture-selection-view choices", () => {
     return el;
   }
 
-  function radios(el: MiniPCArchitectureSelectionView) {
-    return [...el.shadowRoot!.querySelectorAll<WaRadio>("wa-radio")];
+  function cards(el: MiniPCArchitectureSelectionView) {
+    return [...el.shadowRoot!.querySelectorAll<OptionCard>("option-card")];
   }
 
-  it("offers the x86-64 and ARM64 images as a named radio group", async () => {
+  it("offers the x86-64 and ARM64 images as a named group of buttons", async () => {
     const el = await renderChoices();
-    expect(radios(el).map((radio) => radio.value)).to.deep.equal([
+    expect(cards(el).map((card) => card.value)).to.deep.equal([
       "generic-x86-64",
       "generic-aarch64",
     ]);
-    expect(radios(el)[0].textContent).to.contain("Intel/AMD (x86-64)");
-    expect(radios(el)[1].textContent).to.contain("ARM (aarch64)");
-    await el.shadowRoot!.querySelector("wa-radio-group")!.updateComplete;
+    expect(cards(el).map((card) => card.heading)).to.deep.equal([
+      "Intel/AMD (x86-64)",
+      "ARM (aarch64)",
+    ]);
+    expect(cards(el)[0].textContent).to.contain("Intel NUC");
 
-    const groups = findByRole(await fullA11ySnapshot(), "radiogroup");
+    const groups = findByRole(await fullA11ySnapshot(), "group").filter(
+      (group) => group.name === "Processor"
+    );
     expect(groups).to.have.length(1);
-    expect(groups[0]!.name).to.equal("Processor");
-    expect(findByRole(groups[0]!, "radio")).to.have.length(2);
+    expect(findByRole(groups[0]!, "button")).to.have.length(2);
   });
 
   it("leaves out an architecture the catalog does not list", async () => {
@@ -131,14 +134,14 @@ describe("minipc-architecture-selection-view choices", () => {
         (device) => device.category !== "generic_arm64"
       ),
     }));
-    expect(radios(el).map((radio) => radio.value)).to.deep.equal([
+    expect(cards(el).map((card) => card.value)).to.deep.equal([
       "generic-x86-64",
     ]);
   });
 
   it("stores the chosen architecture for the following steps", async () => {
     const el = await renderChoices();
-    const arm = radios(el).find((radio) => radio.value === "generic-aarch64")!;
+    const arm = cards(el).find((card) => card.value === "generic-aarch64")!;
 
     arm.click();
     await waitUntil(
@@ -152,36 +155,16 @@ describe("minipc-architecture-selection-view choices", () => {
     expect(selections.deviceConfig!.board).to.equal("generic-aarch64");
   });
 
-  it("marks the chosen architecture with a check, not only a color", async () => {
+  it("names each processor, describes it with its examples, and keeps the logos from screen readers", async () => {
     const el = await renderChoices();
-    const checks = () =>
-      radios(el).map((radio) => !!radio.querySelector(".selected-indicator"));
-    expect(checks()).to.deep.equal([false, false]);
-
-    radios(el)[1].click();
-    await waitUntil(() => checks()[1], "choice never marked");
-    expect(checks()).to.deep.equal([false, true]);
-    const check = radios(el)[1].querySelector(".selected-indicator")!;
-    expect(check.getAttribute("aria-hidden")).to.equal("true");
-    // The check sits in the radio's corner, out of the centered content
-    const radioBox = radios(el)[1].getBoundingClientRect();
-    const checkBox = check.getBoundingClientRect();
-    expect(checkBox.width).to.be.greaterThan(0);
-    expect(radioBox.right - checkBox.right).to.be.within(8, 10);
-    expect(checkBox.top - radioBox.top).to.be.within(8, 10);
-
-    radios(el)[0].click();
-    await waitUntil(() => checks()[0], "new choice never marked");
-    expect(checks()).to.deep.equal([true, false]);
-  });
-
-  it("keeps the processor logos from screen readers", async () => {
-    const el = await renderChoices();
-    await el.shadowRoot!.querySelector("wa-radio-group")!.updateComplete;
+    await Promise.all(cards(el).map((card) => card.updateComplete));
     const tree = await fullA11ySnapshot();
 
     expect(findByRole(tree, "image")).to.deep.equal([]);
-    expect(findByRole(tree, "radio")[0]!.name).to.contain("Intel/AMD (x86-64)");
+    const [x86] = findByRole(tree, "button");
+    expect(x86!.name).to.equal("Intel/AMD (x86-64)");
+    expect(x86!.description).to.contain("Standard PC architecture");
+    expect(x86!.description).to.contain("Intel NUC");
   });
 
   // Apple silicon Macs also report "Intel Mac OS X"
@@ -230,7 +213,7 @@ describe("minipc-architecture-selection-view choices", () => {
     const el = await fixture<MiniPCArchitectureSelectionView>(
       html`<minipc-architecture-selection-view></minipc-architecture-selection-view>`
     );
-    await waitUntil(() => radios(el).length === 2, "catalog never loaded");
+    await waitUntil(() => cards(el).length === 2, "catalog never loaded");
     await settle();
     expect(commands).to.deep.equal(["get_manifest"]);
   });
@@ -248,7 +231,7 @@ describe("minipc-architecture-selection-view choices", () => {
     const el = await fixture<MiniPCArchitectureSelectionView>(
       html`<minipc-architecture-selection-view></minipc-architecture-selection-view>`
     );
-    await waitUntil(() => radios(el).length === 2, "catalog waited for UTM");
+    await waitUntil(() => cards(el).length === 2, "catalog waited for UTM");
     expect(el.shadowRoot!.querySelector(".mac-note") === null).to.be.true;
 
     utm.resolve(true);
@@ -273,7 +256,7 @@ describe("minipc-architecture-selection-view choices", () => {
       (button) => button.textContent!.includes("Try again")
     )!;
     retry.click();
-    await waitUntil(() => radios(el).length === 2, "catalog never reloaded");
+    await waitUntil(() => cards(el).length === 2, "catalog never reloaded");
 
     expect(attempts).to.equal(2);
     expect(el.shadowRoot!.querySelector("[data-focus-alert]")).to.not.exist;

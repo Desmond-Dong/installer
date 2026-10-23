@@ -10,6 +10,7 @@ import {
   minipcDirectSteps,
   wizardState,
 } from "../../state/wizard-state.js";
+import { goToNextStep } from "../../components/wizard-steps.js";
 import "../../components/option-card.js";
 import { renderStepHeading, stepStyles } from "../../utils/step-styles.js";
 
@@ -69,21 +70,13 @@ export class MiniPCSetupMethodView extends LitElement {
   private _onConnectDrive() {
     wizardState.setSteps(minipcDirectSteps(wizardState.getState().selections));
     wizardState.setSelection("installMethod", "direct");
-    this._continue();
+    goToNextStep(this);
   }
 
   private _onUsbBoot() {
     wizardState.setSteps(MINIPC_STEPS.usb);
     wizardState.setSelection("installMethod", "usb-boot");
-    this._continue();
-  }
-
-  // The pick stands in for Next, so it moves on the way Next does, through
-  // the app shell
-  private _continue() {
-    this.dispatchEvent(
-      new CustomEvent("wizard-next", { bubbles: true, composed: true })
-    );
+    goToNextStep(this);
   }
 }
 
