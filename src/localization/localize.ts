@@ -14,7 +14,11 @@ const formatters = new Map<MessageKey, IntlMessageFormat>();
 
 /** The catalog for the resolved language, falling back to the English one. */
 function catalog(): typeof messages {
-  return catalogs[language.toLowerCase().startsWith("zh") ? "zh" : "en"];
+  // noUncheckedIndexedAccess flags Record lookups; the merged catalogs are
+  // complete, so falling back to the English one is only defensive.
+  return (
+    catalogs[language.toLowerCase().startsWith("zh") ? "zh" : "en"] ?? messages
+  );
 }
 
 export function resolveLanguage(preferences: readonly string[]): string {

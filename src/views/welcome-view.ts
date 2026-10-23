@@ -295,7 +295,12 @@ export class WelcomeView extends LitElement {
   /** [China mirror] Switch the UI language and restart with it applied. */
   private _onLanguageChange(event: Event) {
     const select = event.target as WaSelect;
-    setStoredLanguage(select.value === "auto" ? null : select.value);
+    // Multi-selects report string arrays; this one only picks a single tag.
+    setStoredLanguage(
+      typeof select.value === "string" && select.value !== "auto"
+        ? select.value
+        : null
+    );
     location.reload();
   }
 
