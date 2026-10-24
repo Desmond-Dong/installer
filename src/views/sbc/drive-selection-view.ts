@@ -70,7 +70,7 @@ export class DriveSelectionView extends LitElement {
         width: 100%;
         max-width: 500px;
         margin: 0;
-        color: var(--ha-error-color, #db4437);
+        color: var(--ha-error-color);
         overflow-wrap: anywhere;
       }
 

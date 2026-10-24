@@ -70,7 +70,7 @@ describe("live-usb-success-view", () => {
     }
   });
 
-  it("links to the name Home Assistant announces, for a stick and an ISO alike", async () => {
+  it("leaves following the computer to the next steps, for a stick and an ISO alike", async () => {
     for (const media of ["usb", "iso"] as const) {
       wizardState.startFlow("minipc");
       wizardState.setSelection("liveMedia", media);
@@ -82,10 +82,12 @@ describe("live-usb-success-view", () => {
       const layout = view.shadowRoot!.querySelector("install-success")!;
       await layout.updateComplete;
 
-      const link =
-        layout.shadowRoot!.querySelector<HTMLAnchorElement>(".step-text a")!;
-      expect(link.href).to.equal("http://homeassistant.local/");
-      expect(link.textContent).to.equal("homeassistant.local");
+      const steps = [...layout.shadowRoot!.querySelectorAll(".step-text")].map(
+        (step) => step.textContent!
+      );
+      expect(steps[steps.length - 1]).to.contain(
+        "Once the device is on, select Next"
+      );
       wizardState.reset();
     }
   });

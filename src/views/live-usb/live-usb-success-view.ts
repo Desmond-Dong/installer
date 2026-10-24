@@ -4,10 +4,7 @@ import { customElement, state } from "lit/decorators.js";
 import { revealInFolder } from "../../api/index.js";
 import { wizardState } from "../../state/wizard-state.js";
 import { renderExternalLink } from "../../utils/external-link.js";
-import {
-  HOME_ASSISTANT_HOST,
-  homeAssistantUrl,
-} from "../../utils/external-url.js";
+import { DeviceSurvey } from "../../utils/device-discovery.js";
 import { GENERIC_X86_GUIDE_URL } from "../../utils/urls.js";
 import "@home-assistant/webawesome/dist/components/button/button.js";
 import "../../components/install-success.js";
@@ -21,6 +18,9 @@ export class LiveUsbSuccessView extends LitElement {
       min-height: 100%;
     }
   `;
+
+  // Notes what is on the network before the computer starts Home Assistant
+  protected readonly _survey = new DeviceSurvey(this);
 
   @state()
   private _revealFailed = false;
@@ -56,23 +56,17 @@ export class LiveUsbSuccessView extends LitElement {
             "views.live_usb.live_usb_success_view.iso_remove_and_restart"
           )
         : localize("views.live_usb.live_usb_success_view.remove_and_restart"),
-      html`${localizeContent(
-        "views.live_usb.live_usb_success_view.open_home_assistant",
-        {
-          // The step already says it opens in a browser
-          address: renderExternalLink(homeAssistantUrl(), HOME_ASSISTANT_HOST, {
-            hint: false,
-          }),
-        }
-      )}`,
+      localize("common.success.step_next"),
     ];
 
     return html`
       <install-success
+        .heading=${localize("common.success.almost_there")}
         .subtitle=${iso
           ? localize("views.live_usb.live_usb_success_view.iso_saved")
           : localize("views.live_usb.live_usb_success_view.usb_ready")}
         .formatWarning=${!iso}
+        .companion=${false}
         .steps=${iso
           ? [
               localize("views.live_usb.live_usb_success_view.write_the_iso"),

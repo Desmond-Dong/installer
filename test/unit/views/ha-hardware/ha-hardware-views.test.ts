@@ -679,7 +679,7 @@ describe("Home Assistant hardware views", () => {
         [
           "boot mode toggle back to MMC",
           "put the eMMC module back",
-          "Preparing Home Assistant page",
+          "Keep power and Ethernet connected",
         ],
         "https://www.home-assistant.io/installation/odroid/",
       ],
@@ -696,7 +696,8 @@ describe("Home Assistant hardware views", () => {
         for (const part of expected) {
           expect(content).to.contain(part);
         }
-        expect(content).to.contain("homeassistant.local");
+        // The steps after this one follow the device
+        expect(content).to.contain("Once the device is on, select Next");
         expect(content).not.to.contain(":8123");
         expect(
           success.shadowRoot!.querySelector<HTMLAnchorElement>(

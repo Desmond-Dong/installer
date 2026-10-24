@@ -14,7 +14,7 @@ use hai_core::download::TemporaryImage;
 use hai_core::keep_awake::KeepAwake;
 use hai_core::{
     BlockDevice, DeviceBackend, DeviceManifest, ExpectedDevice, FlashProgress, FlashRequest,
-    FlashResult, FlashStage, HaSetupStatus, HaosRelease, HostBackend, ImageFormat,
+    FlashResult, FlashStage, HaAnnouncement, HaSetupStatus, HaosRelease, HostBackend, ImageFormat,
     ProgressCallback, ProxmoxBackend, ProxmoxBridge, ProxmoxCredentials, ProxmoxNode,
     ProxmoxSession, ProxmoxStorage, ProxmoxVmConfig, ProxmoxVmResult, ReleaseSource, SystemInfo,
     UtmBackend, VmStatusInfo,
@@ -669,6 +669,17 @@ pub async fn get_ha_setup_status(ip_address: String) -> Option<HaSetupStatus> {
         crate::diagnostics::setup_status(status);
     }
     status
+}
+
+/// The Home Assistants that announce themselves on the local network
+#[tauri::command]
+pub async fn find_home_assistants() -> Result<Vec<HaAnnouncement>, CommandError> {
+    let found = Backend
+        .find_home_assistants()
+        .await
+        .map_err(CommandError::from_query);
+    crate::diagnostics::lookup(&found);
+    found
 }
 
 // =============================================================================
@@ -1515,6 +1526,30 @@ mod tests {
         assert_eq!(get_ha_setup_status(core.host_with_port()).await, None);
 
         assert!(setup_status_lines().is_empty());
+    }
+
+    #[cfg(feature = "mock")]
+    #[tokio::test]
+    // Isolated from other tests that clear the tail or record lookups
+    #[serial_test::serial]
+    async fn find_home_assistants_forwards_a_lookup_and_records_only_its_counts() {
+        crate::diagnostics::clear_test_log_tail();
+
+        // The mock finds a landing page each lookup didn't before
+        let found = find_home_assistants().await.unwrap();
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].landing_page);
+        assert_eq!(found[0].address, "192.168.1.101");
+
+        let tail = crate::diagnostics::test_log_tail().join("\n");
+        assert!(
+            tail.contains(" home_assistant_lookup found=1 landing_pages=1"),
+            "{tail}"
+        );
+        // Never which one, or where
+        for private in [found[0].id.as_str(), found[0].address.as_str()] {
+            assert!(!tail.contains(private), "{tail}");
+        }
     }
 
     #[cfg(feature = "mock")]
