@@ -14,7 +14,7 @@ use hai_core::download::TemporaryImage;
 use hai_core::keep_awake::KeepAwake;
 use hai_core::{
     BlockDevice, DeviceBackend, DeviceManifest, ExpectedDevice, FlashProgress, FlashRequest,
-    FlashResult, FlashStage, HaSetupStatus, HaosRelease, HostBackend, ImageFormat,
+    FlashResult, FlashStage, HaAnnouncement, HaSetupStatus, HaosRelease, HostBackend, ImageFormat,
     ProgressCallback, ProxmoxBackend, ProxmoxBridge, ProxmoxCredentials, ProxmoxNode,
     ProxmoxSession, ProxmoxStorage, ProxmoxVmConfig, ProxmoxVmResult, ReleaseSource, SystemInfo,
     UtmBackend, VmStatusInfo,
@@ -46,14 +46,14 @@ impl PendingUtmImages {
 // =============================================================================
 
 /// Adapter that bridges Tauri's Channel with hai-core's ProgressCallback trait
-struct TauriProgressCallback<'a> {
+pub(crate) struct TauriProgressCallback<'a> {
     channel: &'a Channel<FlashProgress>,
-    operation: Operation,
+    pub(crate) operation: Operation,
     cancelled: Option<Arc<AtomicBool>>,
 }
 
 impl<'a> TauriProgressCallback<'a> {
-    fn new(channel: &'a Channel<FlashProgress>, name: &'static str) -> Self {
+    pub(crate) fn new(channel: &'a Channel<FlashProgress>, name: &'static str) -> Self {
         Self {
             channel,
             operation: Operation::new(name),
@@ -62,7 +62,7 @@ impl<'a> TauriProgressCallback<'a> {
     }
 
     /// Let the operation stop once `cancelled` is set.
-    fn cancellable(mut self, cancelled: Arc<AtomicBool>) -> Self {
+    pub(crate) fn cancellable(mut self, cancelled: Arc<AtomicBool>) -> Self {
         self.cancelled = Some(cancelled);
         self
     }
@@ -99,7 +99,7 @@ impl<'a> ProgressCallback for TauriProgressCallback<'a> {
 
 /// Keep the computer awake while a long job runs. Not getting that is only
 /// logged: the job itself works fine as long as the computer stays awake.
-async fn keep_awake(reason: &str) -> Option<KeepAwake> {
+pub(crate) async fn keep_awake(reason: &str) -> Option<KeepAwake> {
     KeepAwake::acquire(reason)
         .await
         .inspect_err(|_| crate::diagnostics::warning("keep_awake_unavailable"))
@@ -135,6 +135,15 @@ async fn list_drives(backend: &impl DeviceBackend) -> Result<Vec<BlockDevice>, C
         .map_err(CommandError::from_query)
 }
 
+/// Restarts the app as administrator, which the drive step offers when
+/// listing refused. The flow starts again in the new window.
+#[tauri::command]
+pub fn relaunch_as_admin(app: tauri::AppHandle) -> Result<(), CommandError> {
+    crate::elevation::relaunch_as_admin()?;
+    app.exit(0);
+    Ok(())
+}
+
 // =============================================================================
 // Flash Commands
 // =============================================================================
@@ -156,17 +165,6 @@ fn find_flash_target<'a>(
         .find(|d| d.id == device_id)
         .ok_or_else(|| CommandError::from(hai_core::Error::DeviceNotFound(device_id.into())))?;
 
-    if !device.removable {
-        return Err(CommandError::new(
-            "invalid_config",
-            format!(
-                "{} is not a removable drive and cannot be overwritten",
-                device_id
-            ),
-            false,
-        ));
-    }
-
     if !expected.matches(device) {
         return Err(CommandError::new(
             "device_not_found",
@@ -177,6 +175,10 @@ fn find_flash_target<'a>(
             ),
             false,
         ));
+    }
+
+    if !device.removable {
+        return Err(CommandError::drive_in_system_use());
     }
 
     let config = hai_core::manifest::storage_requirements(board).ok_or_else(|| {
@@ -191,10 +193,7 @@ fn find_flash_target<'a>(
             "drive_too_small",
             &hai_core::message!(
                 "backend.disk.drive_too_small",
-                size = format!(
-                    "{:.0}",
-                    config.minimum_storage_bytes as f64 / 1_000_000_000.0
-                ),
+                size = config.minimum_storage_bytes.div_ceil(1_000_000_000),
             ),
             false,
         ));
@@ -232,7 +231,7 @@ pub fn cancel_flash(attempt: String, state: tauri::State<'_, FlashState>) {
 }
 
 /// Stop between steps when the user cancelled.
-fn check_cancelled<P: ProgressCallback>(callback: &P) -> Result<(), CommandError> {
+pub(crate) fn check_cancelled<P: ProgressCallback>(callback: &P) -> Result<(), CommandError> {
     if callback.is_cancelled() {
         return Err(hai_core::Error::Cancelled.into());
     }
@@ -274,11 +273,10 @@ where
         message: "Fetching release info...".to_string(),
     });
 
-    // Pinned installers (including the China mirror's x86 installer ISO)
-    // carry their image, size and digest; everything below treats them like
-    // HAOS images.
-    let (installer, image) = match hai_core::hardware_installer::find(&request.board) {
-        Some(installer) => (Some(installer), installer.image()),
+    let image = match hai_core::hardware_installer::find(&request.board) {
+        // Installer images are pinned, size and digest included, so there is
+        // no release to look up. Everything below treats them like HAOS.
+        Some(installer) => installer.image(),
         None => {
             // Fetch the release this board is on
             let release = backend
@@ -297,7 +295,7 @@ where
                         "No compatible image was found for this device.".into(),
                     )
                 })?;
-            (None, image)
+            image
         }
     };
 
@@ -324,15 +322,10 @@ where
     let extracted_path = temporary_image.path();
 
     check_cancelled(callback)?;
-    if installer.is_some_and(|installer| installer.uncompressed) {
-        // The installer ISO is already the image to write: nothing to unpack.
-        std::fs::rename(&compressed_path, &extracted_path).map_err(CommandError::from)?;
-    } else {
-        backend
-            .extract_temporary_image(&temporary_image, callback)
-            .await
-            .map_err(CommandError::from)?;
-    }
+    backend
+        .extract_temporary_image(&temporary_image, callback)
+        .await
+        .map_err(CommandError::from)?;
 
     let mut image = Image::new(&extracted_path);
     if let Some(wifi) = request.wifi.clone() {
@@ -672,6 +665,17 @@ pub async fn get_ha_setup_status(ip_address: String) -> Option<HaSetupStatus> {
     status
 }
 
+/// The Home Assistants that announce themselves on the local network
+#[tauri::command]
+pub async fn find_home_assistants() -> Result<Vec<HaAnnouncement>, CommandError> {
+    let found = Backend
+        .find_home_assistants()
+        .await
+        .map_err(CommandError::from_query);
+    crate::diagnostics::lookup(&found);
+    found
+}
+
 // =============================================================================
 // Proxmox Commands
 // =============================================================================
@@ -791,21 +795,64 @@ pub async fn proxmox_create_vm(
     let _awake = keep_awake("Installing Home Assistant on Proxmox").await;
     let callback = TauriProgressCallback::new(&progress_channel, "proxmox_install")
         .cancellable(job.cancelled());
+    callback
+        .operation
+        .finish(run_proxmox_install(&Backend, &session, &config, &callback).await)
+}
+
+/// Passes progress on, and notes when the install starts to create the VM.
+struct VmCreationWatch<'a, P> {
+    progress: &'a P,
+    creating: AtomicBool,
+}
+
+impl<P: ProgressCallback> ProgressCallback for VmCreationWatch<'_, P> {
+    fn on_progress(&self, progress: FlashProgress) {
+        if matches!(
+            progress.stage,
+            FlashStage::CreatingVm | FlashStage::StartingVm
+        ) {
+            self.creating.store(true, Ordering::Release);
+        }
+        self.progress.on_progress(progress);
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.progress.is_cancelled()
+    }
+}
+
+/// Run a Proxmox install, and say whether trying it again is safe.
+async fn run_proxmox_install<B: ProxmoxBackend, P: ProgressCallback>(
+    backend: &B,
+    session: &ProxmoxSession,
+    config: &ProxmoxVmConfig,
+    progress: &P,
+) -> Result<ProxmoxVmResult, CommandError> {
+    let watch = VmCreationWatch {
+        progress,
+        creating: AtomicBool::new(false),
+    };
     // Fully qualified: `create_vm` is defined on both ProxmoxBackend and UtmBackend.
-    callback.operation.finish(
-        ProxmoxBackend::create_vm(&Backend, &session, &config, &callback)
-            .await
-            .map_err(|error| {
-                let mut error = CommandError::from(error);
-                // A lost response may leave a VM behind. This command cannot yet
-                // resume it safely, even when the underlying network error is transient.
-                // A stop never gets that far, so trying again is fine.
-                if error.code != "cancelled" {
-                    error.retryable = false;
-                }
-                error
-            }),
-    )
+    ProxmoxBackend::create_vm(backend, session, config, &watch)
+        .await
+        .map_err(|error| {
+            // Before the VM is being created, the install has only looked
+            // things up and uploaded an image under a name no other attempt
+            // uses, so it can be tried again like a lookup: after a lost
+            // connection, or once the user has freed the VM ID or storage.
+            if !watch.creating.load(Ordering::Acquire) {
+                return CommandError::from_query(error);
+            }
+            let mut error = CommandError::from(error);
+            // A lost response may leave a VM behind. This command cannot yet
+            // resume it safely, even when the underlying network error is transient.
+            // A stop never gets that far, so trying again is fine.
+            if error.code != "cancelled" {
+                error.retryable = false;
+            }
+            error
+        })
 }
 
 /// Stop the Proxmox install or UTM download that `attempt` names. It ends
@@ -1017,6 +1064,129 @@ mod tests {
             CommandError::from_query(hai_core::Error::ProxmoxApi("Access denied".to_string()));
         let value = tauri::ipc::InvokeError::from(denied).0;
         assert_eq!(value["code"], "proxmox_api");
+    }
+
+    /// Fails the install with `error` once it has reported `stages`
+    struct FailingProxmoxInstall {
+        stages: &'static [FlashStage],
+        error: fn() -> hai_core::Error,
+    }
+
+    impl ProxmoxBackend for FailingProxmoxInstall {
+        async fn authenticate(&self, _: &ProxmoxCredentials) -> hai_core::Result<ProxmoxSession> {
+            unreachable!()
+        }
+
+        async fn list_nodes(&self, _: &ProxmoxSession) -> hai_core::Result<Vec<ProxmoxNode>> {
+            unreachable!()
+        }
+
+        async fn list_bridges(
+            &self,
+            _: &ProxmoxSession,
+            _: &str,
+        ) -> hai_core::Result<Vec<ProxmoxBridge>> {
+            unreachable!()
+        }
+
+        async fn list_storage(
+            &self,
+            _: &ProxmoxSession,
+            _: &str,
+        ) -> hai_core::Result<Vec<ProxmoxStorage>> {
+            unreachable!()
+        }
+
+        async fn get_next_vm_id(&self, _: &ProxmoxSession) -> hai_core::Result<u32> {
+            unreachable!()
+        }
+
+        async fn create_vm<P: ProgressCallback>(
+            &self,
+            _: &ProxmoxSession,
+            _: &ProxmoxVmConfig,
+            progress: &P,
+        ) -> hai_core::Result<ProxmoxVmResult> {
+            for stage in self.stages {
+                progress.on_progress(FlashProgress {
+                    stage: stage.clone(),
+                    progress: 0,
+                    bytes_processed: 0,
+                    total_bytes: 0,
+                    message: String::new(),
+                });
+            }
+            Err((self.error)())
+        }
+    }
+
+    #[tokio::test]
+    async fn proxmox_install_keeps_its_retry_until_the_vm_is_being_created() {
+        use FlashStage::*;
+        let session = ProxmoxSession {
+            server_url: "https://proxmox.example:8006".into(),
+            ticket: "fixture".into(),
+            csrf_token: "fixture".into(),
+            certificate_sha256: None,
+        };
+        let config = ProxmoxVmConfig {
+            node: "pve".into(),
+            storage: "local-lvm".into(),
+            bridge: "vmbr0".into(),
+            vlan_tag: None,
+            vm_id: 100,
+            name: "homeassistant".into(),
+            cpu_cores: 2,
+            memory_mb: 4096,
+            disk_size_gb: 32,
+        };
+        let vm_id_taken: fn() -> hai_core::Error = || {
+            hai_core::Error::ProxmoxActionRequired(hai_core::message!(
+                "backend.proxmox.vm_id_unavailable",
+                vm_id = 100,
+            ))
+        };
+        let lost_download: fn() -> hai_core::Error =
+            || hai_core::Error::DownloadFailed("connection reset".into());
+        let lost_response: fn() -> hai_core::Error =
+            || hai_core::Error::ProxmoxApi("connection reset".into());
+        let expired: fn() -> hai_core::Error = || hai_core::Error::ProxmoxSessionExpired;
+        let cases: [(&'static [FlashStage], _, bool); 7] = [
+            // Taken by someone else between Confirm and the install's own check
+            (&[Downloading], vm_id_taken, true),
+            (&[Downloading], lost_download, true),
+            (&[Downloading, Extracting, Uploading], lost_response, true),
+            // Logging in again gets past this one, not trying again
+            (&[Downloading, Extracting, Uploading], expired, false),
+            // The VM may exist half way, unknown to the installer
+            (
+                &[Downloading, Extracting, Uploading, CreatingVm],
+                lost_response,
+                false,
+            ),
+            (
+                &[Downloading, Extracting, Uploading, CreatingVm],
+                vm_id_taken,
+                false,
+            ),
+            (
+                &[Downloading, Extracting, Uploading, CreatingVm, StartingVm],
+                lost_response,
+                false,
+            ),
+        ];
+
+        for (stages, error, retryable) in cases {
+            let backend = FailingProxmoxInstall { stages, error };
+            let error = run_proxmox_install(&backend, &session, &config, &hai_core::NoOpProgress)
+                .await
+                .unwrap_err();
+            assert_eq!(
+                error.retryable, retryable,
+                "{} after {stages:?}",
+                error.code
+            );
+        }
     }
 
     #[test]
@@ -1354,6 +1524,30 @@ mod tests {
 
     #[cfg(feature = "mock")]
     #[tokio::test]
+    // Isolated from other tests that clear the tail or record lookups
+    #[serial_test::serial]
+    async fn find_home_assistants_forwards_a_lookup_and_records_only_its_counts() {
+        crate::diagnostics::clear_test_log_tail();
+
+        // The mock finds a landing page each lookup didn't before
+        let found = find_home_assistants().await.unwrap();
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].landing_page);
+        assert_eq!(found[0].address, "192.168.1.101");
+
+        let tail = crate::diagnostics::test_log_tail().join("\n");
+        assert!(
+            tail.contains(" home_assistant_lookup found=1 landing_pages=1"),
+            "{tail}"
+        );
+        // Never which one, or where
+        for private in [found[0].id.as_str(), found[0].address.as_str()] {
+            assert!(!tail.contains(private), "{tail}");
+        }
+    }
+
+    #[cfg(feature = "mock")]
+    #[tokio::test]
     async fn ha_setup_status_mock_has_no_landing_page() {
         // The mock's Home Assistant is ready at once, so its landing page is gone
         assert_eq!(get_ha_setup_status("192.168.1.100".into()).await, None);
@@ -1446,7 +1640,7 @@ mod tests {
         let devices = [flash_target("\\\\.\\PhysicalDrive1", false)];
         let err = find_flash_target(&devices, "\\\\.\\PhysicalDrive1", &expected(), "rpi5-64")
             .unwrap_err();
-        assert!(err.message.contains("not a removable drive"), "{err}");
+        assert_eq!(err.code, "drive_in_system_use");
     }
 
     #[test]
@@ -2526,7 +2720,7 @@ mod mock_tests {
         )
         .await
         .unwrap_err();
-        assert!(err.message.contains("not a removable drive"));
+        assert_eq!(err.code, "drive_in_system_use");
     }
 
     #[tokio::test]

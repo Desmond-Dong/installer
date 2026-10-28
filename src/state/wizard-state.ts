@@ -7,15 +7,18 @@ import type {
   UtmVmConfig,
   WifiConfig,
 } from "../api/types.js";
-import type { InstallationPath } from "../views/path-selection-view.js";
-import type { HaHardwareId } from "../views/ha-hardware/hardware.js";
+import type { HaHardwareId, YellowModuleId } from "./ha-hardware.js";
+import type { DeviceFinder } from "../utils/device-discovery.js";
 import { supportsWifi } from "../utils/wifi.js";
 
-export type WizardFlow = InstallationPath;
+/** The way to install, as picked on the first screen. */
+export type WizardFlow = "sbc" | "minipc" | "ha-hardware" | "proxmox" | "vm";
 
 export interface WizardStep {
   id: string;
   title: string;
+  /** Whether the flow has this step for these selections; always, without it */
+  when?(selections: WizardSelections): boolean;
 }
 
 /**
@@ -35,6 +38,8 @@ export interface WizardSelections {
   deviceConfig?: HaosConfig;
   /** Nabu Casa device picked in the Home Assistant hardware flow. */
   haHardware?: HaHardwareId;
+  /** The Yellow's compute modules the catalog offers, each with its storage config. */
+  yellowModules?: { id: YellowModuleId; config: HaosConfig }[];
   /** Device id of the selected drive; also the path sent to the backend. */
   drive?: string;
   /** Rest of the selected drive's identity, kept so it can be re-verified. */
@@ -63,9 +68,34 @@ export interface WizardSelections {
 
   /** Address Home Assistant was reached on, if it was found. */
   ipAddress?: string;
+  /** Home Assistant at `ipAddress` finished installing. */
+  homeAssistantReady?: boolean;
+  /**
+   * Looks for the device a drive was written for. Made once the drive is
+   * done, so it notes what was on the network before the device started.
+   */
+  deviceFinder?: DeviceFinder;
 
   /** UTM was found on the requirements step. */
   utmInstalled?: boolean;
+  /**
+   * macOS lets the installer control UTM. It keeps the answer, so going back
+   * to the requirements step doesn't ask again.
+   */
+  utmControlAllowed?: boolean;
+
+  /** Mini PC path: connect the drive here, or boot the mini PC from USB. */
+  installMethod?: "direct" | "usb-boot";
+  /** Bootable media to create for the USB boot path. */
+  liveMedia?: "usb" | "iso";
+  /** The live USB checks passed (hai-live found, admin rights where needed). */
+  liveReady?: boolean;
+  /** Where the ISO is saved: folder and file name as entered, then the saved path. */
+  liveIsoFolder?: string;
+  liveIsoName?: string;
+  /** The user agreed to replace an existing file with that name. */
+  liveIsoOverwrite?: boolean;
+  liveIsoPath?: string;
   /** UTM install progress, so a retry resumes instead of starting over. */
   vmId?: string;
   /** Native creation outlives its view; reentry must await the same result. */
@@ -114,62 +144,152 @@ export interface WizardState {
 
 type WizardStateListener = (state: WizardState) => void;
 
+/**
+ * A step whose title is looked up each time it is read, so it follows the
+ * language. The step itself is built once and stays the same object, which
+ * the step indicator relies on to keep its steps between selection changes.
+ */
+function localizedStep(
+  id: string,
+  title: () => string,
+  when?: WizardStep["when"]
+): WizardStep {
+  return {
+    id,
+    get title() {
+      return title();
+    },
+    when,
+  };
+}
+
+/**
+ * After a drive is written: starting the device from it, waiting for Home
+ * Assistant on it, and where to find it. The write's own success screen
+ * says how to start the device, under the id the flows have always had.
+ */
+const DEVICE_STEPS: WizardStep[] = [
+  localizedStep("success", () => localize("state.wizard_state.start_device")),
+  localizedStep("setup", () => localize("state.wizard_state.set_up")),
+  localizedStep("done", () => localize("common.done")),
+];
+
+/** Wi-Fi is offered only for boards that have it. */
+const wifiStep = localizedStep(
+  "wifi",
+  () => localize("state.wizard_state.wifi"),
+  (selections) => supportsWifi(selections.deviceConfig?.board)
+);
+
 const FLOW_STEPS: Record<WizardFlow, WizardStep[]> = {
   sbc: [
-    { id: "device", title: localize("state.wizard_state.select_device") },
-    { id: "drive", title: localize("state.wizard_state.select_drive") },
-    { id: "wifi", title: localize("state.wizard_state.wifi") },
-    { id: "confirm", title: localize("common.confirm") },
-    { id: "flash", title: localize("common.install") },
-    { id: "success", title: localize("common.done") },
+    localizedStep("device", () => localize("state.wizard_state.select_device")),
+    localizedStep("drive", () => localize("state.wizard_state.select_drive")),
+    wifiStep,
+    localizedStep("confirm", () => localize("common.confirm")),
+    localizedStep("flash", () => localize("common.install")),
+    ...DEVICE_STEPS,
   ],
   minipc: [
-    { id: "method", title: localize("state.wizard_state.installation_method") },
-    {
-      id: "architecture",
-      title: localize("state.wizard_state.select_architecture"),
-    },
-    { id: "drive", title: localize("state.wizard_state.select_drive") },
-    { id: "wifi", title: localize("state.wizard_state.wifi") },
-    { id: "confirm", title: localize("common.confirm") },
-    { id: "flash", title: localize("common.install") },
-    { id: "success", title: localize("common.done") },
+    localizedStep("method", () =>
+      localize("state.wizard_state.installation_method")
+    ),
+    localizedStep("architecture", () =>
+      localize("state.wizard_state.select_processor")
+    ),
+    localizedStep("drive", () => localize("state.wizard_state.select_drive")),
+    wifiStep,
+    localizedStep("confirm", () => localize("common.confirm")),
+    localizedStep("flash", () => localize("common.install")),
+    ...DEVICE_STEPS,
   ],
   "ha-hardware": [
-    { id: "device", title: localize("state.wizard_state.select_device") },
-    { id: "drive", title: localize("state.wizard_state.select_drive") },
-    { id: "wifi", title: localize("state.wizard_state.wifi") },
-    { id: "confirm", title: localize("common.confirm") },
-    { id: "flash", title: localize("common.install") },
-    { id: "success", title: localize("common.done") },
+    localizedStep("device", () => localize("state.wizard_state.select_device")),
+    // Only for the Yellow, whose compute modules the device step hands on
+    localizedStep(
+      "module",
+      () => localize("state.wizard_state.select_module"),
+      (selections) => !!selections.yellowModules?.length
+    ),
+    localizedStep("drive", () => localize("state.wizard_state.select_drive")),
+    wifiStep,
+    localizedStep("confirm", () => localize("common.confirm")),
+    localizedStep("flash", () => localize("common.install")),
+    ...DEVICE_STEPS,
   ],
   proxmox: [
-    {
-      id: "connection",
-      title: localize("state.wizard_state.connect_to_proxmox"),
-    },
-    { id: "configure", title: localize("state.wizard_state.configure_vm") },
-    { id: "confirm", title: localize("common.confirm") },
-    { id: "install", title: localize("common.install") },
-    { id: "success", title: localize("common.done") },
+    localizedStep("connection", () =>
+      localize("state.wizard_state.connect_to_proxmox")
+    ),
+    localizedStep("configure", () =>
+      localize("state.wizard_state.configure_vm")
+    ),
+    localizedStep("confirm", () => localize("common.confirm")),
+    localizedStep("install", () => localize("common.install")),
+    localizedStep("success", () => localize("common.done")),
   ],
   vm: [
-    { id: "check", title: localize("state.wizard_state.check_requirements") },
-    { id: "configure", title: localize("state.wizard_state.configure_vm") },
-    { id: "confirm", title: localize("common.confirm") },
-    { id: "install", title: localize("common.install") },
-    { id: "success", title: localize("common.done") },
+    localizedStep("check", () =>
+      localize("state.wizard_state.check_requirements")
+    ),
+    localizedStep("configure", () =>
+      localize("state.wizard_state.configure_vm")
+    ),
+    localizedStep("confirm", () => localize("common.confirm")),
+    localizedStep("install", () => localize("common.install")),
+    localizedStep("success", () => localize("common.done")),
   ],
 };
 
-/** The steps of `flow`. Wi-Fi is offered only for boards that have it. */
+/** The steps of `flow` that apply to `selections`. */
 function stepsFor(
   flow: WizardFlow,
   selections: WizardSelections
 ): WizardStep[] {
-  return FLOW_STEPS[flow].filter(
-    (step) => step.id !== "wifi" || supportsWifi(selections.deviceConfig?.board)
-  );
+  // Booting the mini PC from USB has steps of its own. Steps follow the
+  // selections, so this keeps them when a later selection changes.
+  if (flow === "minipc" && selections.installMethod === "usb-boot") {
+    return MINIPC_STEPS[selections.liveMedia ?? "usb"];
+  }
+
+  return FLOW_STEPS[flow].filter((step) => step.when?.(selections) ?? true);
+}
+
+/** The USB path keeps the drive/confirm/flash/success ids, so the shell's drive
+ * re-checks, erase confirmation and retry handling apply to it unchanged. */
+function liveUsbSteps(target: WizardStep): WizardStep[] {
+  return [
+    localizedStep("method", () =>
+      localize("state.wizard_state.installation_method")
+    ),
+    localizedStep("media", () => localize("state.wizard_state.media_type")),
+    target,
+    localizedStep("confirm", () => localize("common.confirm")),
+    localizedStep("flash", () => localize("common.create")),
+    ...DEVICE_STEPS,
+  ];
+}
+
+/** Mini PC paths share the method step, then each shows its own steps. */
+export const MINIPC_STEPS = {
+  // No board is picked yet; choosing one adds the Wi-Fi step back.
+  direct: stepsFor("minipc", {}),
+  usb: liveUsbSteps(
+    localizedStep("drive", () =>
+      localize("state.wizard_state.select_usb_stick")
+    )
+  ),
+  iso: liveUsbSteps(
+    localizedStep("location", () =>
+      localize("state.wizard_state.save_location")
+    )
+  ),
+};
+
+/** The direct path's steps, with Wi-Fi if the architecture picked earlier has it. */
+export function minipcDirectSteps(selections: WizardSelections): WizardStep[] {
+  // Without a picked architecture, deviceConfig may still be the USB path's
+  return stepsFor("minipc", selections.device ? selections : {});
 }
 
 function createInitialState(): WizardState {
@@ -232,17 +352,9 @@ class WizardStateStore {
 
   previousStep() {
     if (this.state.currentStepIndex > 0) {
-      // [China mirror] The x86 USB installer route skips the architecture
-      // step on the way in; skip it again going out, so Back returns to the
-      // method choice instead of a step the route never offered.
-      const target =
-        this.state.steps[this.state.currentStepIndex]?.id === "drive" &&
-        this.state.selections.deviceConfig?.board === "x86-installer"
-          ? this.state.steps.findIndex((step) => step.id === "method")
-          : this.state.currentStepIndex - 1;
       this.state = {
         ...this.state,
-        currentStepIndex: target,
+        currentStepIndex: this.state.currentStepIndex - 1,
         selections: {
           ...this.state.selections,
           deviceCatalogReady: false,
@@ -291,21 +403,32 @@ class WizardStateStore {
     const keys = Object.keys(changes) as (keyof WizardSelections)[];
     if (keys.every((key) => Object.is(previous[key], changes[key]))) return;
     const selections = { ...previous, ...changes };
-    const { currentFlow, currentStepIndex } = this.state;
-    if ("deviceConfig" in changes && currentFlow) {
-      // The board decides whether there is a Wi-Fi step; stay on the same step
-      const current = this.state.steps[currentStepIndex]?.id;
-      const steps = stepsFor(currentFlow, selections);
-      const index = steps.findIndex((step) => step.id === current);
-      this.state = {
-        ...this.state,
-        steps,
-        currentStepIndex: index >= 0 ? index : currentStepIndex,
-        selections,
-      };
-    } else {
-      this.state = { ...this.state, selections };
-    }
+    const { currentFlow, currentStepIndex, steps } = this.state;
+    // Selections decide which steps the flow has; stay on the same step. The
+    // same steps stay the same array, so the step indicator keeps them.
+    const next = currentFlow ? stepsFor(currentFlow, selections) : steps;
+    const changed =
+      next.length !== steps.length ||
+      next.some((step, index) => step !== steps[index]);
+    const index = next.findIndex(
+      (step) => step.id === steps[currentStepIndex]?.id
+    );
+    this.state = {
+      ...this.state,
+      steps: changed ? next : steps,
+      currentStepIndex: index >= 0 ? index : currentStepIndex,
+      selections,
+    };
+    this.notify();
+  }
+
+  /** Replaces the step list when a choice splits the flow; keeps the position. */
+  setSteps(steps: WizardStep[]) {
+    this.state = {
+      ...this.state,
+      steps,
+      currentStepIndex: Math.min(this.state.currentStepIndex, steps.length - 1),
+    };
     this.notify();
   }
 
@@ -325,11 +448,6 @@ class WizardStateStore {
 
   get isLastStep(): boolean {
     return this.state.currentStepIndex === this.state.steps.length - 1;
-  }
-
-  get progress(): number {
-    if (this.state.steps.length === 0) return 0;
-    return (this.state.currentStepIndex + 1) / this.state.steps.length;
   }
 }
 

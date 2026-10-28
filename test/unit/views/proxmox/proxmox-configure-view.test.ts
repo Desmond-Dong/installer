@@ -216,6 +216,110 @@ describe("proxmox-configure-view", () => {
     expect(wizardState.getState().selections.proxmoxConfigureReady).to.be.true;
   });
 
+  it("marks the name and the VM ID required, not the VLAN tag", async () => {
+    const el = await mount();
+    await Promise.all(
+      [...el.shadowRoot!.querySelectorAll<WaInput>("wa-input")].map(
+        (input) => input.updateComplete
+      )
+    );
+
+    const snapshot = await fullA11ySnapshot();
+    const required = (role: string, name: string) =>
+      findByRole(snapshot, role).find((node) => node.name === name)?.required;
+    expect(required("textbox", "Display name")).to.be.true;
+    expect(required("spinbutton", "VM ID")).to.be.true;
+    expect(el.shadowRoot!.querySelector<WaInput>("#vlan-tag")!.required).to.be
+      .false;
+  });
+
+  it("asks for Next on Enter in a text field, not on a select", async () => {
+    const el = await mount();
+    const root = el.shadowRoot!;
+    await Promise.all(
+      [...root.querySelectorAll<WaSelect>("wa-select")].map(
+        (select) => select.updateComplete
+      )
+    );
+    const sent: string[] = [];
+    el.addEventListener("wizard-next", (e) =>
+      sent.push((e.composedPath()[0] as HTMLElement).id || "name")
+    );
+    const enter = () =>
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        bubbles: true,
+        composed: true,
+      });
+
+    for (const select of root.querySelectorAll<WaSelect>("wa-select")) {
+      select.displayInput.dispatchEvent(enter());
+    }
+    expect(sent).to.deep.equal([]);
+
+    for (const input of root.querySelectorAll<WaInput>("wa-input")) {
+      input.input.dispatchEvent(enter());
+    }
+    expect(sent).to.deep.equal(["name", "vm-id", "vlan-tag"]);
+  });
+
+  it("gives every field the same size, the VLAN tag included", async () => {
+    const el = await mount();
+    const fields = [
+      ...el.shadowRoot!.querySelectorAll("wa-input, wa-select"),
+    ].map(
+      (field) => `${field.id || field.localName} ${field.getAttribute("size")}`
+    );
+    expect(fields).to.include("vlan-tag s");
+    expect(fields.filter((field) => !field.endsWith(" s"))).to.deep.equal([]);
+  });
+
+  it("says each row is loading while the nodes are looked up", async () => {
+    const nodes = deferred<unknown>();
+    mockTauriIpc((cmd) => {
+      switch (cmd) {
+        case "proxmox_list_bridges":
+          return [{ name: "vmbr0", network_type: "bridge", comments: null }];
+        case "proxmox_list_nodes":
+          return nodes.promise;
+        case "proxmox_get_next_vm_id":
+          return 100;
+        case "proxmox_list_storage":
+          return [
+            {
+              name: "local-lvm",
+              active: true,
+              content: ["images"],
+              available: 100,
+            },
+          ];
+      }
+      throw new Error(`Unexpected IPC command: ${cmd}`);
+    });
+    const el = await fixture<ProxmoxConfigureView>(html`
+      <proxmox-configure-view></proxmox-configure-view>
+    `);
+
+    // Not an empty storage dropdown next to the others' loading text
+    expect(el.shadowRoot!.querySelectorAll("wa-select")).to.have.length(0);
+    expect(
+      [...el.shadowRoot!.querySelectorAll(".loading-text")].map((text) =>
+        text.textContent!.trim()
+      )
+    ).to.deep.equal([
+      "Loading nodes...",
+      "Loading storage...",
+      "Loading network bridges...",
+    ]);
+
+    nodes.resolve([{ name: "pve", status: "online" }]);
+    await waitUntil(
+      () => el.shadowRoot!.querySelectorAll("wa-select").length === 3,
+      "the dropdowns never replaced the loading text"
+    );
+    expect(el.shadowRoot!.querySelector(".loading-text")).to.be.null;
+  });
+
   it("keeps the VM ID as typed and only saves one Proxmox accepts", async () => {
     const el = await mount();
     const vmId = el.shadowRoot!.querySelector<WaInput>(
@@ -295,12 +399,72 @@ describe("proxmox-configure-view", () => {
     expect(cores.value).to.equal(3);
   });
 
+  it("hands the sliders the same options while the name is typed", async () => {
+    // The mocked pve2 has 8 CPUs, so its core options are a filtered list
+    wizardState.setSelection("proxmoxNode", "pve2");
+    const el = await mount();
+    const resources = el.shadowRoot!.querySelector("vm-resources")!;
+    const options = () => [
+      resources.coreOptions,
+      resources.memoryOptions,
+      resources.diskOptions,
+    ];
+    const before = options();
+    expect(before[0]).to.deep.equal([2, 4, 6, 8]);
+
+    const name = el.shadowRoot!.querySelector<WaInput>(
+      'wa-input[label="Display name"]'
+    )!;
+    name.value = "my-home";
+    name.dispatchEvent(new Event("input"));
+    await el.updateComplete;
+
+    expect(wizardState.getState().selections.vmName).to.equal("my-home");
+    // New arrays would render every slider again, on every keystroke
+    expect(options()).to.have.ordered.members(before);
+  });
+
   it("shows storage labels without template indentation", async () => {
     const el = await mount();
     const select = el.shadowRoot!.querySelectorAll("wa-select")[1];
-    // Decimal units: the 200 GiB mock storage is 214.7 GB
-    await waitUntil(() => select.displayLabel === "local (214.7 GB free)");
-    expect(select.displayInput.value).to.equal("local (214.7 GB free)");
+    // In the GB of the disk sizes: the 200 GiB mock storage is 200 GB
+    await waitUntil(() => select.displayLabel === "local (200 GB free)");
+    expect(select.displayInput.value).to.equal("local (200 GB free)");
+  });
+
+  // Proxmox makes a "32G" disk 32 GiB. Listed as 34 GB free in decimal
+  // units, "tight" seemed to have room for it until the check at Next.
+  it("lists free space in the GB the disk sizes are in", async () => {
+    const storage = (name: string, available: number): ProxmoxStorage => ({
+      name,
+      storage_type: "lvmthin",
+      active: true,
+      content: ["images"],
+      available,
+    });
+    mockTauriIpc((cmd) => {
+      switch (cmd) {
+        case "proxmox_list_bridges":
+          return [{ name: "vmbr0", network_type: "bridge", comments: null }];
+        case "proxmox_list_nodes":
+          return [{ name: "pve", status: "online" }];
+        case "proxmox_get_next_vm_id":
+          return 100;
+        case "proxmox_list_storage":
+          return [storage("large", 400 * 1024 ** 3), storage("tight", 34e9)];
+      }
+      throw new Error(`Unexpected IPC command: ${cmd}`);
+    });
+
+    const el = await mount();
+
+    const options = [
+      ...el.shadowRoot!.querySelectorAll("#storage wa-option"),
+    ].map((option) => option.textContent!.trim());
+    expect(options).to.deep.equal([
+      "large (400 GB free)",
+      "tight (31.6 GB free)",
+    ]);
   });
 
   it("saves the defaults on a first visit", async () => {
@@ -409,14 +573,14 @@ describe("proxmox-configure-view", () => {
       wizardState.setSelection("proxmoxStorage", "local-lvm");
       const el = await mount();
 
-      const alert = el.shadowRoot!.querySelector("[role=alert]")!;
-      expect(alert.textContent).to.contain(
+      const message = el.shadowRoot!.querySelector(".error-text")!;
+      expect(message.textContent).to.contain(
         "No active storage on this node can hold the VM disk."
       );
-      expect(alert.textContent).to.contain(
+      expect(message.textContent).to.contain(
         'Enable the "Disk image" content type'
       );
-      expect(alert.textContent).to.contain("choose another node");
+      expect(message.textContent).to.contain("choose another node");
       // Next needs a storage, so the restored one may not stay chosen
       expect(wizardState.getState().selections.proxmoxStorage).to.equal("");
       const storageSelect = el.shadowRoot!.querySelectorAll("wa-select")[1];
@@ -425,7 +589,7 @@ describe("proxmox-configure-view", () => {
 
     it("reads the storage again from Try again", async () => {
       const el = await mount();
-      await waitUntil(() => !!el.shadowRoot!.querySelector("[role=alert]"));
+      await waitUntil(() => !!el.shadowRoot!.querySelector(".error-text"));
 
       const lookup = deferred<ProxmoxStorage[]>();
       storages = lookup.promise;
@@ -454,7 +618,7 @@ describe("proxmox-configure-view", () => {
         "proxmox_list_storage",
         "proxmox_list_bridges",
       ]);
-      expect(el.shadowRoot!.querySelector("[role=alert]")).to.be.null;
+      expect(el.shadowRoot!.querySelector(".error-text")).to.be.null;
       const storageSelect = el.shadowRoot!.querySelectorAll("wa-select")[1];
       expect(storageSelect.disabled).to.be.false;
       expect(storageSelect.value).to.equal("local-lvm");
@@ -760,7 +924,7 @@ describe("proxmox-configure-view", () => {
       if (outcome === "replaced session" || outcome === "detached view") {
         expect(selections.proxmoxSession).to.equal(session);
         expect(selections.proxmoxConnected).to.be.true;
-        expect(el.shadowRoot!.querySelector("[role=alert]")).to.be.null;
+        expect(el.shadowRoot!.querySelector("[data-focus-alert]")).to.be.null;
       } else {
         expect(selections.proxmoxSession).to.be.undefined;
         expect(selections.proxmoxConnected).to.be.false;
@@ -890,7 +1054,9 @@ describe("proxmox-configure-view", () => {
       const el = await fixture<ProxmoxConfigureView>(html`
         <proxmox-configure-view></proxmox-configure-view>
       `);
-      await waitUntil(() => !!el.shadowRoot!.querySelector("[role=alert]"));
+      await waitUntil(
+        () => !!el.shadowRoot!.querySelector("[data-focus-alert]")
+      );
       // Remote details stay out of the view; the code picks a safe message
       expect(el.shadowRoot!.textContent).to.contain("account permissions");
       expect(wizardState.getState().selections.proxmoxConfigureReady).to.be
@@ -901,15 +1067,28 @@ describe("proxmox-configure-view", () => {
       calls.length = 0;
       const retry = el.shadowRoot!.querySelector("wa-button")!;
       expect(retry.textContent).to.contain("Try again");
+      retry.focus();
       retry.click();
       retry.click();
       await el.updateComplete;
-      expect(el.shadowRoot!.textContent).to.contain("Loading nodes...");
+      // Try again stays, busy, with the focus; the alert empties so the same
+      // failure would be read out again
+      expect(el.shadowRoot!.querySelector("wa-button") === retry).to.be.true;
+      expect(retry.hasAttribute("loading")).to.be.true;
+      expect(
+        el.shadowRoot!.querySelector("[data-focus-alert]")!.textContent!.trim()
+      ).to.equal("");
+      expect(el.shadowRoot!.activeElement === retry).to.be.true;
       expect(wizardState.getState().selections.proxmoxConfigureReady).to.be
         .false;
       nodes.resolve([{ name: "pve", status: "online" }]);
       await waitUntil(
         () => wizardState.getState().selections.proxmoxConfigureReady === true
+      );
+      // The settings took its place, so the focus goes on from their heading
+      await waitUntil(
+        () =>
+          el.shadowRoot!.activeElement === el.shadowRoot!.querySelector("h2")
       );
       expect(calls).to.deep.equal([
         "proxmox_list_nodes",
@@ -924,7 +1103,7 @@ describe("proxmox-configure-view", () => {
       expect(selections.cpuCores).to.equal(8);
       expect(selections.memoryMb).to.equal(8192);
       expect(selections.diskSizeGb).to.equal(64);
-      expect(el.shadowRoot!.querySelector("[role=alert]")).to.be.null;
+      expect(el.shadowRoot!.querySelector("[data-focus-alert]")).to.be.null;
     });
 
     it(`offers reconnect when ${failingCommand} rejects an expired session`, async () => {
@@ -949,7 +1128,9 @@ describe("proxmox-configure-view", () => {
       const el = await fixture<ProxmoxConfigureView>(html`
         <proxmox-configure-view></proxmox-configure-view>
       `);
-      await waitUntil(() => !!el.shadowRoot!.querySelector("[role=alert]"));
+      await waitUntil(
+        () => !!el.shadowRoot!.querySelector("[data-focus-alert]")
+      );
       expect(wizardState.getState().selections.proxmoxSession).to.be.undefined;
       expect(wizardState.getState().selections.proxmoxConnected).to.be.false;
       if (failingCommand !== "proxmox_list_storage") {
@@ -1094,9 +1275,10 @@ describe("proxmox-configure-view", () => {
       bridge: "vmbr0",
       vm_id: 100,
     });
-    expect(
-      el.shadowRoot!.querySelector("[role=alert]")!.textContent
-    ).to.contain("VM ID 100 can't be used. Choose a different ID.");
+    const hint = el.shadowRoot!.querySelector(".vm-id-hint")!;
+    expect(hint.textContent).to.contain(
+      "VM ID 100 can't be used. Choose a different ID."
+    );
 
     // The form stays, so the setting can be fixed right here
     const vmId = el.shadowRoot!.querySelector<WaInput>(
@@ -1105,8 +1287,7 @@ describe("proxmox-configure-view", () => {
     vmId.value = "101";
     vmId.dispatchEvent(new Event("input"));
     await el.updateComplete;
-    expect(el.shadowRoot!.querySelector("[role=alert]")?.textContent).to.be
-      .undefined;
+    expect(hint.textContent).not.to.contain("can't be used");
 
     rejection = undefined;
     expect(await el.check()).to.be.true;
@@ -1158,7 +1339,7 @@ describe("proxmox-configure-view", () => {
     const el = await fixture<ProxmoxConfigureView>(html`
       <proxmox-configure-view></proxmox-configure-view>
     `);
-    await waitUntil(() => !!el.shadowRoot!.querySelector("[role=alert]"));
+    await waitUntil(() => !!el.shadowRoot!.querySelector("[data-focus-alert]"));
 
     // The pinned session can never succeed again, so it is dropped
     const selections = wizardState.getState().selections;
@@ -1186,7 +1367,7 @@ describe("proxmox-configure-view", () => {
     const el = await fixture<ProxmoxConfigureView>(html`
       <proxmox-configure-view></proxmox-configure-view>
     `);
-    await waitUntil(() => !!el.shadowRoot!.querySelector("[role=alert]"));
+    await waitUntil(() => !!el.shadowRoot!.querySelector("[data-focus-alert]"));
     el.shadowRoot!.querySelector("wa-button")!.click();
     el.remove();
     expect(wizardState.currentStep!.id).to.equal("connection");

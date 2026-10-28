@@ -3,6 +3,7 @@ import "@home-assistant/webawesome/dist/components/radio-group/radio-group.js";
 import "../../../src/components/drive-card.js";
 import type { DriveCard } from "../../../src/components/drive-card.js";
 import { findByRole, fullA11ySnapshot } from "../helpers/a11y.js";
+import { expectReadsLeftToRight } from "../helpers/bidi.js";
 
 describe("drive-card", () => {
   it("renders with drive name", async () => {
@@ -14,6 +15,49 @@ describe("drive-card", () => {
     expect(name).to.exist;
     expect(name!.textContent).to.equal("My USB Drive");
   });
+
+  // The name is built from the vendor and model, which the details repeat
+  for (const [name, vendor, model] of [
+    ["SanDisk Cruzer Blade USB Device", "SanDisk", "Cruzer Blade"],
+    [
+      "GenericSTORAGEDEVICEMultiCardReaderUSB",
+      "Generic",
+      "STORAGEDEVICEMultiCardReaderUSB",
+    ],
+  ]) {
+    it(`wraps ${name} and its details instead of cutting them off`, async () => {
+      // The drive list's width in the smallest window at 200% zoom
+      const el = await fixture<DriveCard>(html`
+        <drive-card
+          style="width: 368px"
+          name=${name}
+          vendor=${vendor}
+          model=${model}
+          drive-size="32000000000"
+        ></drive-card>
+      `);
+
+      /** The text of a line, as laid out */
+      const text = (selector: string) => {
+        const range = document.createRange();
+        range.selectNodeContents(el.shadowRoot!.querySelector(selector)!);
+        return range;
+      };
+      const size = el
+        .shadowRoot!.querySelector(".size")!
+        .getBoundingClientRect().left;
+
+      expect(text(".name").getClientRects().length).to.be.greaterThan(1);
+      for (const selector of [".name", ".details"]) {
+        const shown = el.shadowRoot!.querySelector<HTMLElement>(selector)!;
+        expect(shown.scrollWidth, selector).to.equal(shown.clientWidth);
+        expect(
+          text(selector).getBoundingClientRect().right,
+          selector
+        ).to.be.at.most(size);
+      }
+    });
+  }
 
   it("renders with formatted size", async () => {
     const el = await fixture<DriveCard>(html`
@@ -34,13 +78,13 @@ describe("drive-card", () => {
     expect(size!.textContent).to.equal("2 TB");
   });
 
-  it("displays 0 B for zero size", async () => {
+  it("displays 0 bytes for zero size", async () => {
     const el = await fixture<DriveCard>(html`
       <drive-card name="Test" drive-size="0"></drive-card>
     `);
 
     const size = el.shadowRoot!.querySelector(".size");
-    expect(size!.textContent).to.equal("0 B");
+    expect(size!.textContent).to.equal("0 bytes");
   });
 
   it("shows the selected indicator when checked", async () => {
@@ -48,12 +92,12 @@ describe("drive-card", () => {
       <drive-card name="Test"></drive-card>
     `);
 
-    expect(el.shadowRoot!.querySelector(".selected-indicator")).to.be.null;
+    expect(el.shadowRoot!.querySelector(".badge")).to.be.null;
 
     el.checked = true;
     await el.updateComplete;
 
-    expect(el.shadowRoot!.querySelector(".selected-indicator")).to.exist;
+    expect(el.shadowRoot!.querySelector(".badge")).to.exist;
   });
 
   it("reports disabled to assistive technology", async () => {
@@ -76,6 +120,39 @@ describe("drive-card", () => {
 
     const details = el.shadowRoot!.querySelector(".details");
     expect(details!.textContent!.trim()).to.equal("Drive is too small");
+  });
+
+  it("fades a disabled drive but not the reason it can't be picked", async () => {
+    const el = await fixture<DriveCard>(html`
+      <drive-card
+        name="Test"
+        disabled
+        disabled-reason="Drive is too small"
+      ></drive-card>
+    `);
+    const opacity = (selector: string) =>
+      getComputedStyle(el.shadowRoot!.querySelector(selector)!).opacity;
+
+    for (const selector of [".icon-container", ".name", ".size"]) {
+      expect(opacity(selector), selector).to.equal("0.5");
+    }
+    // Opacity on any of these would fade the reason with it
+    for (const selector of [".card", ".info", ".details"]) {
+      expect(opacity(selector), selector).to.equal("1");
+    }
+    // Web Awesome's radio fades its whole host when disabled
+    expect(getComputedStyle(el).opacity, "host").to.equal("1");
+    const reason = getComputedStyle(
+      el.shadowRoot!.querySelector(".details")!
+    ).color;
+
+    el.disabled = false;
+    await el.updateComplete;
+    expect(opacity(".name")).to.equal("1");
+    // Nor is the reason paler than an available drive's details
+    expect(
+      getComputedStyle(el.shadowRoot!.querySelector(".details")!).color
+    ).to.equal(reason);
   });
 
   it("renders SD card icon for sd_card type", async () => {
@@ -132,6 +209,21 @@ describe("drive-card", () => {
     expect(icon).to.exist;
   });
 
+  // The icon only pictures the drive's kind; the card's text names the drive
+  it("keeps its icon from screen readers", async () => {
+    await fixture<DriveCard>(html`
+      <drive-card
+        value="/dev/sda"
+        name="SanDisk"
+        device-type="sd_card"
+      ></drive-card>
+    `);
+    const tree = await fullA11ySnapshot();
+
+    expect(findByRole(tree, "image")).to.deep.equal([]);
+    expect(findByRole(tree, "radio")[0]!.name).to.contain("SanDisk");
+  });
+
   it("displays vendor and model in details", async () => {
     const el = await fixture<DriveCard>(html`
       <drive-card name="Test" vendor="SanDisk" model="Ultra"></drive-card>
@@ -141,6 +233,23 @@ describe("drive-card", () => {
     expect(details!.textContent!.trim()).to.equal("SanDisk Ultra");
   });
 
+  it("does not repeat a vendor the model already starts with", async () => {
+    for (const [vendor, model, expected] of [
+      ["Samsung", "Samsung EVO Plus", "Samsung EVO Plus"],
+      ["APPLE", "Apple SD Card Reader", "Apple SD Card Reader"],
+      ["Samsung", "Samsung", "Samsung"],
+      // Only a whole word counts
+      ["Sam", "Samsung EVO Plus", "Sam Samsung EVO Plus"],
+    ]) {
+      const el = await fixture<DriveCard>(html`
+        <drive-card name="Test" vendor=${vendor} model=${model}></drive-card>
+      `);
+
+      const details = el.shadowRoot!.querySelector(".details");
+      expect(details!.textContent!.trim()).to.equal(expected);
+    }
+  });
+
   it("displays type label when vendor/model not provided", async () => {
     const el = await fixture<DriveCard>(html`
       <drive-card name="Test" device-type="usb_drive"></drive-card>
@@ -148,6 +257,54 @@ describe("drive-card", () => {
 
     const details = el.shadowRoot!.querySelector(".details");
     expect(details!.textContent!.trim()).to.equal("USB drive");
+  });
+
+  it("shows the device path in quiet monospace below the details", async () => {
+    const el = await fixture<DriveCard>(html`
+      <drive-card name="Test" model="Ultra" value="/dev/sdb"></drive-card>
+    `);
+
+    const details = el.shadowRoot!.querySelector(".details")!;
+    const path = el.shadowRoot!.querySelector(".path")!;
+    expect(path.textContent).to.equal("/dev/sdb");
+    expect(details.nextElementSibling).to.equal(path);
+    expect(getComputedStyle(path).fontFamily).to.contain("monospace");
+    expect(getComputedStyle(path).color).to.equal(
+      getComputedStyle(details).color
+    );
+  });
+
+  it("keeps the path on a drive that can't be picked", async () => {
+    const el = await fixture<DriveCard>(html`
+      <drive-card
+        name="Test"
+        value="/dev/sdb"
+        disabled
+        disabled-reason="Drive is too small"
+      ></drive-card>
+    `);
+
+    expect(el.shadowRoot!.querySelector(".path")!.textContent).to.equal(
+      "/dev/sdb"
+    );
+  });
+
+  it("reads the path left to right in a right-to-left language", async () => {
+    for (const path of ["/dev/sdb", "\\\\.\\PhysicalDrive2"]) {
+      const el = await fixture<DriveCard>(html`
+        <drive-card dir="rtl" name="Test" value=${path}></drive-card>
+      `);
+
+      expectReadsLeftToRight(el.shadowRoot!.querySelector(".path")!);
+    }
+  });
+
+  it("leaves out the path line without a path", async () => {
+    const el = await fixture<DriveCard>(html`
+      <drive-card name="Test"></drive-card>
+    `);
+
+    expect(el.shadowRoot!.querySelector(".path")).to.be.null;
   });
 
   it("has the correct structure", async () => {
@@ -282,6 +439,31 @@ describe("drive-card", () => {
 
       expect(groups).to.have.length(1);
       expect(groups[0]!.name).to.equal("Target drive");
+    });
+
+    it("tells identical drives apart by path in their accessible names", async () => {
+      const root = fixtureSync<HTMLElement>(html`
+        <wa-radio-group radio-tag="drive-card" aria-label="Target drive">
+          ${["/dev/sdb", "/dev/sdc"].map(
+            (path) => html`
+              <drive-card
+                .value=${path}
+                .name=${"Flash Disk"}
+                .driveSize=${32e9}
+              ></drive-card>
+            `
+          )}
+        </wa-radio-group>
+      `);
+      await (root as HTMLElement & { updateComplete: Promise<unknown> })
+        .updateComplete;
+      await Promise.all(cards(root).map((c) => c.updateComplete));
+
+      const radios = findByRole(await fullA11ySnapshot(), "radio");
+
+      expect(radios).to.have.length(2);
+      expect(radios[0]!.name).to.contain("Flash Disk").and.contain("/dev/sdb");
+      expect(radios[1]!.name).to.contain("Flash Disk").and.contain("/dev/sdc");
     });
 
     it("keeps a disabled drive out of the tab order", async () => {

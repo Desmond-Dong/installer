@@ -12,6 +12,7 @@ import type {
 import { wizardState } from "../../../../src/state/wizard-state.js";
 import "../../../../src/views/proxmox/proxmox-progress-view.js";
 import type { ProxmoxProgressView } from "../../../../src/views/proxmox/proxmox-progress-view.js";
+import { showsError } from "../../helpers/progress-error.js";
 import {
   deferred,
   ipcError,
@@ -224,8 +225,63 @@ describe("proxmox-progress-view", () => {
     el.retry();
     await settle();
     expect(attempts).to.equal(1);
-    expect(el.hasError).to.be.true;
+    expect(showsError(el)).to.be.true;
   });
+
+  // Before the VM is being created, the backend keeps the retry: nothing is
+  // left on the server that a new attempt would trip over
+  for (const [error, shown] of [
+    [
+      ipcError("download_failed", "Download failed: connection reset", true),
+      "could not be downloaded",
+    ],
+    [
+      // Taken by someone else after Confirm, and freed in Proxmox again
+      ipcError("proxmox_action_required", "VM ID 100 can't be used.", true, {
+        message_key: "backend.proxmox.vm_id_unavailable",
+        message_params: { vm_id: 100 },
+      }),
+      "VM ID 100 can't be used",
+    ],
+  ] as const) {
+    it(`tries ${error.code} before the VM exists again, with the same login and settings`, async () => {
+      const attempts: unknown[] = [];
+      mockTauriIpc((cmd, args) => {
+        switch (cmd) {
+          case "proxmox_create_vm": {
+            const { session, config } = args as Record<string, unknown>;
+            attempts.push({ session, config });
+            if (attempts.length === 1) return Promise.reject(error);
+            return { vm_id: 100, node: "pve" };
+          }
+          case "proxmox_get_vm_status":
+            return { status: "running", ip_address: "192.168.1.50" };
+          case "check_ha_ready":
+          case "check_ha_updated":
+            return true;
+        }
+        throw new Error(`Unexpected IPC command: ${cmd}`);
+      });
+
+      const el = mount();
+      const failed = await oneEvent(el, "install-error");
+      await el.updateComplete;
+
+      expect(failed.detail.retryable).to.be.true;
+      expect(failed.detail.reconnect).to.be.false;
+      expect(errorText(el)).to.contain(shown);
+      const selections = wizardState.getState().selections;
+      expect(selections.proxmoxSession).to.exist;
+      expect(selections.proxmoxVmResult).to.be.undefined;
+
+      const completed = oneEvent(el, "install-complete");
+      el.retry();
+      await completed;
+
+      expect(attempts).to.have.length(2);
+      expect(attempts[1]).to.deep.equal(attempts[0]);
+    });
+  }
 
   it("waits for Home Assistant before advancing", async () => {
     const haReady = deferred<boolean>();
@@ -284,7 +340,7 @@ describe("proxmox-progress-view", () => {
     const el = mount();
     await oneEvent(el, "install-complete");
 
-    expect(el.hasError).to.be.false;
+    expect(showsError(el)).to.be.false;
     expect(wizardState.getState().selections.ipAddress).to.equal(
       "192.168.1.50"
     );
@@ -352,7 +408,9 @@ describe("proxmox-progress-view", () => {
       await el.updateComplete;
 
       expect(failed.detail.retryable).to.be.true;
-      expect(errorText(el)).to.contain("did not report an IPv4 address");
+      expect(errorText(el)).to.contain(
+        "did not report an IPv4 address within 5 minutes. Check that it is running in Proxmox"
+      );
       // Not reported as installed, and nothing to check Home Assistant on
       expect(calls).to.not.include("check_ha_ready");
       // The VM is kept, so a retry does not create a second one
@@ -460,7 +518,7 @@ describe("proxmox-progress-view", () => {
       "never showed the problem",
       { timeout: 3000 }
     );
-    expect(el.hasError).to.be.false;
+    expect(showsError(el)).to.be.false;
     el.remove();
   });
 
@@ -540,7 +598,7 @@ describe("proxmox-progress-view", () => {
     await oneEvent(el, "install-complete");
 
     expect(statusCalls).to.equal(2);
-    expect(el.hasError).to.be.false;
+    expect(showsError(el)).to.be.false;
   });
 
   // Before the VM is created, logging in again can start over safely. Once
@@ -744,7 +802,7 @@ describe("proxmox-progress-view", () => {
       const el = mount();
       const reported: boolean[] = [];
       el.addEventListener("install-stoppable", (event) => {
-        reported.push((event as CustomEvent).detail.stoppable);
+        reported.push(event.detail.stoppable);
       });
       await install.created;
       install.report("uploading");
@@ -796,7 +854,7 @@ describe("proxmox-progress-view", () => {
       install.createVm.resolve({ vm_id: 100, node: "pve" });
       await completed;
 
-      expect(el.hasError).to.be.false;
+      expect(showsError(el)).to.be.false;
       expect(stageTitle(el)).to.not.equal("Stopping");
     });
 
@@ -827,7 +885,7 @@ describe("proxmox-progress-view", () => {
       await el.updateComplete;
 
       expect(abortSignalOf(el), "install should not have started").to.not.exist;
-      expect(el.hasError).to.be.true;
+      expect(showsError(el)).to.be.true;
       expect(progressOf(el).textContent).to.contain("No Proxmox session");
       expect(errorEvents).to.equal(1);
     } finally {

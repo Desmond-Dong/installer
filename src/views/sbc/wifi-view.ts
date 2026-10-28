@@ -3,6 +3,7 @@ import { LitElement, html, css, nothing } from "lit";
 import { ViewAccessibility } from "../../utils/view-accessibility.js";
 import { customElement, state } from "lit/decorators.js";
 import { wizardState, type WizardState } from "../../state/wizard-state.js";
+import { WizardStateController } from "../../state/wizard-state-controller.js";
 import type { WifiConfig } from "../../api/types.js";
 import { ssidProblem, wifiPasswordProblem } from "../../utils/wifi.js";
 import type WaInput from "@home-assistant/webawesome/dist/components/input/input.js";
@@ -10,6 +11,9 @@ import type WaSwitch from "@home-assistant/webawesome/dist/components/switch/swi
 import "@home-assistant/webawesome/dist/components/input/input.js";
 import "@home-assistant/webawesome/dist/components/switch/switch.js";
 import { renderStepHeading, stepStyles } from "../../utils/step-styles.js";
+import { panelStyles } from "../../utils/panel-styles.js";
+import { fieldError, fieldErrorStyles } from "../../utils/field-error.js";
+import { nextOnEnter } from "../../components/wizard-steps.js";
 
 /** Optional step for boards with built-in Wi-Fi: the network to join. */
 @customElement("wifi-view")
@@ -17,32 +21,27 @@ export class WifiView extends LitElement {
   protected readonly _accessibility = new ViewAccessibility(this);
   static styles = [
     stepStyles,
+    fieldErrorStyles,
     css`
       .wifi-card {
-        display: flex;
-        flex-direction: column;
-        gap: 1rem;
-        padding: 1.5rem;
-        background-color: var(--ha-card-background, #ffffff);
-        border: 1px solid var(--ha-border-color, #e0e0e0);
-        border-radius: var(--ha-card-border-radius, 12px);
-        width: 100%;
-        box-sizing: border-box;
-        max-width: 500px;
+        ${panelStyles}
       }
 
       .note {
-        max-width: 500px;
+        max-width: var(--ha-content-width);
         margin: 1rem 0 0 0;
         font-size: 0.875rem;
         line-height: 1.5;
-        color: var(--ha-secondary-text-color, #727272);
+        color: var(--ha-secondary-text-color);
       }
     `,
   ];
 
-  @state()
-  private _wizardState: WizardState = wizardState.getState();
+  private readonly _wizard = new WizardStateController(this);
+
+  private get _wizardState(): WizardState {
+    return this._wizard.state;
+  }
 
   // Fields left at least once. Until then an empty or short value may still
   // be on its way; one filled in on an earlier visit to this step is done.
@@ -51,20 +50,6 @@ export class WifiView extends LitElement {
 
   @state()
   private _passwordLeft = this._wizardState.selections.wifi !== undefined;
-
-  private _unsubscribe?: () => void;
-
-  connectedCallback() {
-    super.connectedCallback();
-    this._unsubscribe = wizardState.subscribe((state) => {
-      this._wizardState = state;
-    });
-  }
-
-  disconnectedCallback() {
-    super.disconnectedCallback();
-    this._unsubscribe?.();
-  }
 
   render() {
     const wifi = this._wizardState.selections.wifi;
@@ -90,9 +75,10 @@ export class WifiView extends LitElement {
                 autocorrect="off"
                 .spellcheck=${false}
                 .value=${wifi.ssid}
-                .customError=${ssidError ?? null}
                 @input=${this._onSsidInput}
                 @blur=${this._onSsidBlur}
+                @keydown=${this._onKeyDown}
+                ${fieldError(ssidError)}
               >
                 <!-- In the hint slot, so the field describes itself with it.
                   Not role="alert": ViewAccessibility focuses a new alert, which
@@ -108,9 +94,10 @@ export class WifiView extends LitElement {
                 autocomplete="off"
                 password-toggle
                 .value=${wifi.password}
-                .customError=${passwordError ?? null}
                 @input=${this._onPasswordInput}
                 @blur=${this._onPasswordBlur}
+                @keydown=${this._onKeyDown}
+                ${fieldError(passwordError)}
               >
                 <!-- In the hint slot and not role="alert", like the network
                   name's -->
@@ -177,6 +164,15 @@ export class WifiView extends LitElement {
 
   private _onPasswordBlur() {
     this._passwordLeft = true;
+  }
+
+  private _onKeyDown(e: KeyboardEvent) {
+    // Enter says the fields are done, as leaving them does: if Next can't go
+    // on yet, their errors say why
+    if (nextOnEnter(e)) {
+      this._ssidLeft = true;
+      this._passwordLeft = true;
+    }
   }
 
   private _onSsidInput(e: Event) {

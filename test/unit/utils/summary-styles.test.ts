@@ -4,10 +4,12 @@ import type { HaosRelease } from "../../../src/api/types.js";
 import {
   HaosVersion,
   renderHaosVersionRow,
-  renderSummaryIcon,
   renderSummaryRow,
-} from "../../../src/components/summary-card.js";
+  renderVmSummaryRows,
+  summaryStyles,
+} from "../../../src/utils/summary-styles.js";
 import { mdiMonitor } from "../../../src/utils/icons.js";
+import { renderIcon } from "../../../src/utils/render-icon.js";
 import { mockTauriIpc, restoreTauriIpc, settle } from "../tauri-ipc.js";
 
 function rendered(template: unknown): HTMLDivElement {
@@ -16,10 +18,10 @@ function rendered(template: unknown): HTMLDivElement {
   return container;
 }
 
-/** Each line of a summary row's text, as its paragraphs show it. */
+/** Each line of a summary row's text: its heading, then its paragraphs. */
 function lines(row: Element) {
-  return [...row.querySelectorAll("p")].map((p) =>
-    p.textContent!.replace(/\s+/g, " ").trim()
+  return [...row.querySelectorAll(".summary-info > *")].map((line) =>
+    line.textContent!.replace(/\s+/g, " ").trim()
   );
 }
 
@@ -37,7 +39,7 @@ function host() {
   return result satisfies ReactiveControllerHost & { updates: number };
 }
 
-describe("summary-card", () => {
+describe("summary-styles", () => {
   afterEach(() => {
     restoreTauriIpc();
   });
@@ -45,7 +47,7 @@ describe("summary-card", () => {
   it("renders a row's icon, label, value and details in order", () => {
     const container = rendered(
       renderSummaryRow(
-        renderSummaryIcon(mdiMonitor),
+        renderIcon(mdiMonitor),
         "Virtual machine",
         "Home Assistant",
         html`<p class="summary-detail">4 CPU cores</p>
@@ -56,7 +58,8 @@ describe("summary-card", () => {
     expect(
       row.querySelector(".icon-container svg path")!.getAttribute("d")
     ).to.equal(mdiMonitor);
-    expect(row.querySelector(".summary-label")!.textContent).to.equal(
+    // The row's heading, under the step's h2
+    expect(row.querySelector("h3.summary-label")!.textContent).to.equal(
       "Virtual machine"
     );
     expect(row.querySelector(".summary-value")!.textContent).to.equal(
@@ -69,6 +72,42 @@ describe("summary-card", () => {
       "32 GB",
     ]);
   });
+
+  for (const value of [
+    "Realtek USB 3.0 Card Reader SD/MMC USB Device",
+    "HomeAssistantOnTheMiniPcInTheLivingRoom",
+  ]) {
+    it(`wraps ${value} instead of cutting it off`, () => {
+      // The content's width in the smallest window at 200% zoom. A plain
+      // container: fixture() would wait for a frame, which a background
+      // test page never paints
+      const host = document.createElement("div");
+      host.style.width = "368px";
+      const root = host.attachShadow({ mode: "open" });
+      root.adoptedStyleSheets = [summaryStyles.styleSheet!];
+      render(
+        html`<div class="summary-card">
+          ${renderSummaryRow(renderIcon(mdiMonitor), "Target drive", value)}
+        </div>`,
+        root
+      );
+      document.body.append(host);
+      try {
+        const card = root.querySelector(".summary-card")!;
+        const shown = root.querySelector<HTMLElement>(".summary-value")!;
+        const range = document.createRange();
+        range.selectNodeContents(shown);
+
+        expect(range.getClientRects().length).to.be.greaterThan(1);
+        expect(shown.scrollWidth).to.equal(shown.clientWidth);
+        expect(range.getBoundingClientRect().right).to.be.at.most(
+          card.getBoundingClientRect().right
+        );
+      } finally {
+        host.remove();
+      }
+    });
+  }
 
   it("leaves out details a row doesn't have", () => {
     const row = rendered(
@@ -95,6 +134,50 @@ describe("summary-card", () => {
       ]);
     });
   }
+
+  describe("renderVmSummaryRows", () => {
+    const config = {
+      name: "Home Assistant",
+      cpu_cores: 6,
+      memory_mb: 8192,
+      disk_size_gb: 128,
+    };
+
+    it("sums up the VM, its disk and the release, divided", () => {
+      const container = rendered(renderVmSummaryRows(config, "16.3"));
+      expect(
+        [...container.querySelectorAll(".summary-row")].map(lines)
+      ).to.deep.equal([
+        ["Virtual machine", "Home Assistant", "6 CPU cores, 8 GB RAM"],
+        ["Storage", "128 GB", "Virtual disk for Home Assistant data"],
+        [
+          "Home Assistant Operating System",
+          "Version 16.3",
+          "Latest stable release",
+        ],
+      ]);
+      expect(
+        [...container.children].map((child) => child.className)
+      ).to.deep.equal([
+        "summary-row",
+        "divider",
+        "summary-row",
+        "divider",
+        "summary-row",
+      ]);
+    });
+
+    it("shows the VM as the flow names it", () => {
+      const row = rendered(
+        renderVmSummaryRows(config, "16.3", "Home Assistant (ID: 105)")
+      ).querySelector(".summary-row")!;
+      expect(lines(row)).to.deep.equal([
+        "Virtual machine",
+        "Home Assistant (ID: 105)",
+        "6 CPU cores, 8 GB RAM",
+      ]);
+    });
+  });
 
   describe("HaosVersion", () => {
     const release: HaosRelease = { version: "16.3", images: [] };

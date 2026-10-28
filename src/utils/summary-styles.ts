@@ -5,24 +5,21 @@ import {
   type ReactiveController,
   type ReactiveControllerHost,
 } from "lit";
-import type { HaosRelease } from "../api/types.js";
-import { localize } from "../localization/localize.js";
-import { logFrontendError } from "../utils/diagnostics.js";
-import { homeAssistantLogo } from "../utils/icons.js";
+import type { HaosRelease, UtmVmConfig } from "../api/types.js";
+import { localize, localizeContent } from "../localization/localize.js";
+import { logFrontendError } from "./diagnostics.js";
+import { formatDiskSize, formatRam } from "./format.js";
+import { homeAssistantLogo, mdiHarddisk, mdiMonitor } from "./icons.js";
+import { panelStyles } from "./panel-styles.js";
+import { sectionLabelStyles } from "./section-label-styles.js";
+import { renderIcon } from "./render-icon.js";
 
 /** The card the confirm steps sum up an install in, one row per part. */
 export const summaryStyles = css`
+  ${sectionLabelStyles}
+
   .summary-card {
-    display: flex;
-    flex-direction: column;
-    gap: 1.5rem;
-    padding: 1.5rem;
-    background-color: var(--ha-card-background, #ffffff);
-    border: 1px solid var(--ha-border-color, #e0e0e0);
-    border-radius: var(--ha-card-border-radius, 12px);
-    width: 100%;
-    box-sizing: border-box;
-    max-width: 500px;
+    ${panelStyles}
   }
 
   .summary-row {
@@ -43,58 +40,45 @@ export const summaryStyles = css`
   .icon-container svg {
     width: 36px;
     height: 36px;
-    fill: var(--ha-secondary-text-color, #727272);
+    fill: var(--ha-secondary-text-color);
   }
 
   .icon-container .ha-icon {
-    fill: var(--ha-primary-color, #03a9f4);
+    fill: var(--ha-primary-color);
   }
 
+  /* A long drive or VM name wraps, even mid-word, rather than being cut
+     off: this is where the user checks it before the install */
   .summary-info {
     flex: 1;
     min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   .summary-label {
     font-size: 0.75rem;
-    font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--ha-secondary-text-color, #727272);
     margin: 0 0 0.25rem 0;
   }
 
   .summary-value {
     font-size: 1rem;
     font-weight: 500;
-    color: var(--ha-text-color, #212121);
+    color: var(--ha-text-color);
     margin: 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
 
   .summary-detail {
     font-size: 0.875rem;
-    color: var(--ha-secondary-text-color, #727272);
+    color: var(--ha-secondary-text-color);
     margin: 0.25rem 0 0 0;
   }
 
   .divider {
     height: 1px;
-    background-color: var(--ha-border-color, #e0e0e0);
+    background-color: var(--ha-border-color);
     margin: 0;
   }
 `;
-
-/** A 24 by 24 icon, like the MDI ones, for a summary row */
-export function renderSummaryIcon(path: string) {
-  return html`
-    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-      <path d=${path} />
-    </svg>
-  `;
-}
 
 /** The Home Assistant logo, in the primary color */
 export const haIcon = html`
@@ -111,6 +95,8 @@ export const haIcon = html`
 /**
  * One row of the summary: an icon, what the row is about and its value.
  * `details` go below the value, as `<p class="summary-detail">` lines.
+ * The label already says what the icon shows, so screen readers skip it.
+ * The label is the row's heading, under the step's h2.
  */
 export function renderSummaryRow(
   icon: unknown,
@@ -120,9 +106,9 @@ export function renderSummaryRow(
 ) {
   return html`
     <div class="summary-row">
-      <div class="icon-container">${icon}</div>
+      <div class="icon-container" aria-hidden="true">${icon}</div>
       <div class="summary-info">
-        <p class="summary-label">${label}</p>
+        <h3 class="section-label summary-label">${label}</h3>
         <p class="summary-value">${value}</p>
         ${details}
       </div>
@@ -149,6 +135,49 @@ export function renderHaosVersionRow(version: string | null | undefined) {
       ${localize("common.confirm.latest_stable_release")}
     </p>`
   );
+}
+
+/**
+ * The rows the UTM and Proxmox confirm steps share: the VM the install
+ * creates, its disk and the Home Assistant OS release. `name` is the VM's
+ * row value, for a flow that shows more than the name there.
+ */
+export function renderVmSummaryRows(
+  config: Pick<
+    UtmVmConfig,
+    "name" | "cpu_cores" | "memory_mb" | "disk_size_gb"
+  >,
+  version: string | null | undefined,
+  name: unknown = config.name
+) {
+  return html`
+    ${renderSummaryRow(
+      renderIcon(mdiMonitor),
+      localize("common.virtual_machine"),
+      name,
+      html`<p class="summary-detail">
+        ${localizeContent("common.vm.cores_and_memory", {
+          cores: config.cpu_cores,
+          memory: formatRam(config.memory_mb),
+        })}
+      </p>`
+    )}
+
+    <div class="divider"></div>
+
+    ${renderSummaryRow(
+      renderIcon(mdiHarddisk),
+      localize("utils.summary_styles.disk_storage"),
+      formatDiskSize(config.disk_size_gb),
+      html`<p class="summary-detail">
+        ${localize("common.vm.virtual_disk_description")}
+      </p>`
+    )}
+
+    <div class="divider"></div>
+
+    ${renderHaosVersionRow(version)}
+  `;
 }
 
 /**

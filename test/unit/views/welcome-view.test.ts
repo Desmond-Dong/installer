@@ -88,7 +88,7 @@ describe("welcome-view", () => {
     expect(footer.querySelector("diagnostics-actions.report")).to.exist;
     expect(footer.querySelector("wa-select.language")).to.exist;
     expect(footer.querySelector(".learn-more")!.textContent!.trim()).to.equal(
-      "Learn more"
+      "Learn more Opens in your browser."
     );
   });
 });

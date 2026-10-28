@@ -2,22 +2,29 @@ import { expect, fixture, html } from "@open-wc/testing";
 import "../../../../src/views/minipc/setup-method-view.js";
 import type { MiniPCSetupMethodView } from "../../../../src/views/minipc/setup-method-view.js";
 import type { OptionCard } from "../../../../src/components/option-card.js";
-import { wizardState } from "../../../../src/state/wizard-state.js";
-import { restoreTauriIpc } from "../../tauri-ipc.js";
+import {
+  MINIPC_STEPS,
+  wizardState,
+} from "../../../../src/state/wizard-state.js";
 
-async function renderMethod() {
+async function renderMethod({ shell = true } = {}) {
   wizardState.startFlow("minipc");
   const el = await fixture<MiniPCSetupMethodView>(
     html`<minipc-setup-method-view></minipc-setup-method-view>`
   );
+  // Stands in for the app shell, which takes the pick as Next
+  if (shell) el.addEventListener("wizard-next", () => wizardState.nextStep());
   const [connectDrive, usbBoot] =
     el.shadowRoot!.querySelectorAll<OptionCard>("option-card");
   return { el, connectDrive, usbBoot };
 }
 
+function stepIds() {
+  return wizardState.getState().steps.map((step) => step.id);
+}
+
 describe("minipc-setup-method-view", () => {
   afterEach(() => {
-    restoreTauriIpc();
     wizardState.reset();
   });
 
@@ -32,25 +39,69 @@ describe("minipc-setup-method-view", () => {
     expect(usbBoot.description).to.contain("bootable USB drive");
   });
 
-  it("starts the x86 USB installer and skips the architecture step", async () => {
-    const { usbBoot } = await renderMethod();
-    usbBoot.click();
-    expect(wizardState.currentStep!.id).to.equal("drive");
-    const { selections } = wizardState.getState();
-    expect(selections.deviceConfig?.board).to.equal("x86-installer");
-    expect(selections.deviceConfig?.minimum_storage_bytes).to.equal(
-      1_000_000_000
-    );
-    // The installer ISO only boots on x86, and such an installer has no
-    // built-in Wi-Fi: the wizard hides the Wi-Fi step for it.
-    expect(wizardState.getState().steps.map((step) => step.id)).to.not.contain(
-      "wifi"
-    );
-  });
+  for (const [card, method, steps] of [
+    ["connectDrive", "direct", MINIPC_STEPS.direct],
+    ["usbBoot", "usb-boot", MINIPC_STEPS.usb],
+  ] as const) {
+    it(`leaves moving on after ${method} to the app shell, once it is saved`, async () => {
+      const rendered = await renderMethod({ shell: false });
+      const sent: unknown[] = [];
+      rendered.el.addEventListener("wizard-next", (event) =>
+        sent.push({
+          reachesShell: event.bubbles && event.composed,
+          method: wizardState.getState().selections.installMethod,
+        })
+      );
+
+      rendered[card].click();
+
+      expect(sent).to.deep.equal([{ reachesShell: true, method }]);
+      expect(stepIds()).to.deep.equal(steps.map((step) => step.id));
+      expect(wizardState.currentStep!.id).to.equal("method");
+    });
+  }
 
   it("continues to the architecture step when the drive can be connected", async () => {
     const { connectDrive } = await renderMethod();
     connectDrive.click();
     expect(wizardState.currentStep!.id).to.equal("architecture");
+    expect(wizardState.getState().selections.installMethod).to.equal("direct");
+  });
+
+  it("continues to the media step when booting from USB", async () => {
+    const { usbBoot } = await renderMethod();
+    usbBoot.click();
+    expect(wizardState.currentStep!.id).to.equal("media");
+    expect(stepIds()).to.deep.equal(MINIPC_STEPS.usb.map((step) => step.id));
+    expect(wizardState.getState().selections.installMethod).to.equal(
+      "usb-boot"
+    );
+  });
+
+  it("restores the direct steps after going back from USB boot", async () => {
+    const { connectDrive, usbBoot } = await renderMethod();
+    usbBoot.click();
+    wizardState.previousStep();
+    connectDrive.click();
+    expect(wizardState.currentStep!.id).to.equal("architecture");
+    expect(stepIds()).to.deep.equal(MINIPC_STEPS.direct.map((step) => step.id));
+  });
+
+  it("keeps the Wi-Fi step after going back and connecting the drive again", async () => {
+    const { connectDrive } = await renderMethod();
+    connectDrive.click();
+    // The architecture step picked a board with Wi-Fi
+    wizardState.setSelection("device", "generic-x86-64");
+    wizardState.setSelection("deviceConfig", {
+      board: "generic-x86-64",
+      minimum_storage_bytes: 0,
+      recommended_storage_bytes: 0,
+    });
+    expect(stepIds()).to.include("wifi");
+
+    wizardState.previousStep();
+    connectDrive.click();
+    expect(wizardState.currentStep!.id).to.equal("architecture");
+    expect(stepIds()).to.include("wifi");
   });
 });

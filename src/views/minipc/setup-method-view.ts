@@ -5,8 +5,12 @@ import {
   reducedMotionStyles,
 } from "../../utils/view-accessibility.js";
 import { customElement } from "lit/decorators.js";
-import { wizardState } from "../../state/wizard-state.js";
-import { findInstaller, installerConfig } from "../ha-hardware/hardware.js";
+import {
+  MINIPC_STEPS,
+  minipcDirectSteps,
+  wizardState,
+} from "../../state/wizard-state.js";
+import { goToNextStep } from "../../components/wizard-steps.js";
 import "../../components/option-card.js";
 import { renderStepHeading, stepStyles } from "../../utils/step-styles.js";
 
@@ -22,7 +26,7 @@ export class MiniPCSetupMethodView extends LitElement {
         flex-direction: column;
         gap: 1rem;
         width: 100%;
-        max-width: 500px;
+        max-width: var(--ha-content-width);
       }
     `,
   ];
@@ -64,28 +68,15 @@ export class MiniPCSetupMethodView extends LitElement {
   }
 
   private _onConnectDrive() {
-    wizardState.nextStep();
+    wizardState.setSteps(minipcDirectSteps(wizardState.getState().selections));
+    wizardState.setSelection("installMethod", "direct");
+    goToNextStep(this);
   }
 
-  /**
-   * [China mirror] "Boot from USB" is a fully supported installation now:
-   * burn the x86-64 installer ISO from the China mirror onto a USB stick and
-   * boot it on the mini PC. Skip the architecture step (the ISO targets
-   * Intel/AMD machines) and go straight to picking the USB stick.
-   */
   private _onUsbBoot() {
-    const installer = findInstaller("x86-installer")!;
-    wizardState.setSelection("device", installer.board);
-    wizardState.setSelection(
-      "deviceName",
-      localize("views.minipc.setup_method_view.intel_amd_mini_pc")
-    );
-    wizardState.setSelection("deviceConfig", installerConfig(installer));
-    const steps = wizardState.getState().steps;
-    const driveStep = steps.findIndex((step) => step.id === "drive");
-    if (driveStep >= 0) {
-      wizardState.goToStep(driveStep);
-    }
+    wizardState.setSteps(MINIPC_STEPS.usb);
+    wizardState.setSelection("installMethod", "usb-boot");
+    goToNextStep(this);
   }
 }
 

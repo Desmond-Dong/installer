@@ -7,6 +7,7 @@ import {
   waitUntil,
 } from "@open-wc/testing";
 import "../../../../src/views/ha-hardware/device-selection-view.js";
+import "../../../../src/views/ha-hardware/module-selection-view.js";
 import "../../../../src/views/ha-hardware/connect-instructions.js";
 import "../../../../src/views/ha-hardware/success-view.js";
 import "../../../../src/views/sbc/confirmation-view.js";
@@ -14,22 +15,26 @@ import "../../../../src/views/sbc/drive-selection-view.js";
 import "../../../../src/views/sbc/progress-view.js";
 import type { HaHardwareDeviceSelectionView } from "../../../../src/views/ha-hardware/device-selection-view.js";
 import type { HaHardwareConnectInstructions } from "../../../../src/views/ha-hardware/connect-instructions.js";
+import type { CardButton } from "../../../../src/components/card-button.js";
+import type { OptionCard } from "../../../../src/components/option-card.js";
 import {
   HA_HARDWARE,
   findHaHardware,
   installerConfig,
   type HaHardwareId,
-} from "../../../../src/views/ha-hardware/hardware.js";
+} from "../../../../src/state/ha-hardware.js";
 import {
   MOCK_BLOCK_DEVICES,
   MOCK_MANIFEST,
 } from "../../../../src/api/mock-data.js";
 import type { FlashRequest } from "../../../../src/api/types.js";
 import { wizardState } from "../../../../src/state/wizard-state.js";
+import { wizardStep } from "../../../../src/components/wizard-steps.js";
 import {
   isEligibleFlashTarget,
   storeDriveSelection,
 } from "../../../../src/utils/drive-selection.js";
+import { fireEvent } from "../../../../src/utils/fire-event.js";
 import { deferred, mockTauriIpc, restoreTauriIpc } from "../../tauri-ipc.js";
 import { expectThemeLink } from "../../helpers/link-style.js";
 
@@ -52,6 +57,18 @@ function select(id: HaHardwareId, name: string) {
 
 const text = (root: ShadowRoot) => root.textContent!.replace(/\s+/g, " ");
 
+/** The cards of the step `el` shows */
+const cardsOf = (el: Element) => [
+  ...el.shadowRoot!.querySelectorAll<CardButton>("device-card, option-card"),
+];
+
+/** Pick the card for `value` on the step `el` shows */
+function pick(el: Element, value: string) {
+  cardsOf(el)
+    .find((card) => card.value === value)!
+    .click();
+}
+
 describe("Home Assistant hardware views", () => {
   afterEach(() => {
     fixtureCleanup();
@@ -60,7 +77,7 @@ describe("Home Assistant hardware views", () => {
   });
 
   describe("device selection", () => {
-    it("offers the Green, both Yellows and the Blue", async () => {
+    it("offers the Green, one Yellow and the Blue", async () => {
       wizardState.startFlow("ha-hardware");
       const el = await fixture(
         html`<ha-hardware-device-selection-view></ha-hardware-device-selection-view>`
@@ -69,25 +86,25 @@ describe("Home Assistant hardware views", () => {
       const cards = [...el.shadowRoot!.querySelectorAll("device-card")];
       expect(cards.map((card) => card.value)).to.deep.equal([
         "ha-green",
-        "ha-yellow-cm4",
-        "ha-yellow-cm5",
+        "ha-yellow",
         "ha-blue",
       ]);
       expect(cards.map((card) => card.name)).to.deep.equal([
         "Home Assistant Green",
-        "Home Assistant Yellow with CM4",
-        "Home Assistant Yellow with CM5",
+        "Home Assistant Yellow",
         "Home Assistant Blue",
       ]);
     });
 
-    for (const [id, name, heading, action, note] of [
+    // Going back stands out where the device is ready to use as it is
+    for (const [id, name, heading, action, note, emphasis] of [
       [
         "green",
         "Home Assistant Green",
         "Your Home Assistant Green is ready to use",
         "Reinstall",
         "Only reinstall to reset or recover it",
+        "secondary",
       ],
       [
         "blue",
@@ -95,6 +112,7 @@ describe("Home Assistant hardware views", () => {
         "Your Home Assistant Blue is ready to use",
         "Reinstall",
         "Only reinstall to reset or recover it",
+        "secondary",
       ],
       [
         "yellow-cm4",
@@ -102,6 +120,7 @@ describe("Home Assistant hardware views", () => {
         "Your Yellow may be ready to use",
         "Install",
         "set up a compute module of your own",
+        "primary",
       ],
     ] as const) {
       it(`asks before reinstalling the ${id}`, async () => {
@@ -117,15 +136,18 @@ describe("Home Assistant hardware views", () => {
         await el.updateComplete;
         expect(dialog.open).to.equal(true);
         expect(dialog.heading).to.equal(heading);
-        expect(dialog.message).to.contain("homeassistant.local");
+        expect(dialog.message).to.contain(
+          "then open homeassistant.local in a browser."
+        );
         expect(dialog.primaryLabel).to.equal(action);
+        expect(dialog.emphasis).to.equal(emphasis);
         expect(dialog.textContent).to.contain(note);
-        dialog.dispatchEvent(new CustomEvent("dialog-secondary"));
+        fireEvent(dialog, "dialog-secondary");
         expect(await declined).to.equal(false);
 
         const confirmed = el.confirmReinstall();
         await el.updateComplete;
-        dialog.dispatchEvent(new CustomEvent("dialog-primary"));
+        fireEvent(dialog, "dialog-primary");
         expect(await confirmed).to.equal(true);
         await el.updateComplete;
         expect(dialog.open).to.equal(false);
@@ -145,9 +167,6 @@ describe("Home Assistant hardware views", () => {
 
     for (const [value, id, board] of [
       ["ha-green", "green", "green-installer"],
-      ["ha-yellow-cm4", "yellow-cm4", "yellow-installer"],
-      // The installer only boots on a CM4; a CM5 gets Home Assistant OS
-      ["ha-yellow-cm5", "yellow-cm5", "yellow"],
       ["ha-blue", "blue", "odroid-n2"],
     ] as const) {
       it(`selecting ${value} stores the ${board} board`, async () => {
@@ -156,16 +175,89 @@ describe("Home Assistant hardware views", () => {
           html`<ha-hardware-device-selection-view></ha-hardware-device-selection-view>`
         );
         await waitUntil(() => el.shadowRoot!.querySelector("device-card"));
-        const group = el.shadowRoot!.querySelector("wa-radio-group")!;
-        group.value = value;
-        group.dispatchEvent(new Event("change"));
+        pick(el, value);
         const selections = wizardState.getState().selections;
         expect(selections.device).to.equal(value);
         expect(selections.haHardware).to.equal(id);
         expect(selections.deviceConfig!.board).to.equal(board);
         expect(selections.deviceCatalogReady).to.equal(true);
+        expect(
+          wizardState.getState().steps.map((step) => step.id)
+        ).not.to.include("module");
       });
     }
+
+    it("selecting the Yellow leaves its compute module to the next step", async () => {
+      wizardState.startFlow("ha-hardware");
+      const el = await fixture(
+        html`<ha-hardware-device-selection-view></ha-hardware-device-selection-view>`
+      );
+      await waitUntil(() => el.shadowRoot!.querySelector("device-card"));
+      pick(el, "ha-yellow");
+      const { selections, steps } = wizardState.getState();
+      expect(selections.device).to.equal("ha-yellow");
+      expect(selections.deviceName).to.equal("Home Assistant Yellow");
+      expect(selections.haHardware).to.equal(undefined);
+      expect(selections.deviceConfig).to.equal(undefined);
+      expect(selections.yellowModules!.map(({ id }) => id)).to.deep.equal([
+        "yellow-cm4",
+        "yellow-cm5",
+      ]);
+      expect(steps.map((step) => step.id).slice(0, 3)).to.deep.equal([
+        "device",
+        "module",
+        "drive",
+      ]);
+    });
+
+    it("keeps the compute module when the Yellow is picked again", async () => {
+      select("yellow-cm5", "Home Assistant Yellow with CM5");
+      storeDriveSelection(MOCK_BLOCK_DEVICES[2]);
+      const el = await fixture(
+        html`<ha-hardware-device-selection-view></ha-hardware-device-selection-view>`
+      );
+      await waitUntil(() => el.shadowRoot!.querySelector("device-card"));
+      pick(el, "ha-yellow");
+      const { selections } = wizardState.getState();
+      expect(selections.haHardware).to.equal("yellow-cm5");
+      expect(selections.deviceName).to.equal("Home Assistant Yellow with CM5");
+      expect(selections.drive).to.equal(MOCK_BLOCK_DEVICES[2].id);
+    });
+
+    it("asks for the compute module again after another device", async () => {
+      select("yellow-cm5", "Home Assistant Yellow with CM5");
+      const el = await fixture(
+        html`<ha-hardware-device-selection-view></ha-hardware-device-selection-view>`
+      );
+      await waitUntil(() => el.shadowRoot!.querySelector("device-card"));
+      pick(el, "ha-green");
+      expect(
+        wizardState.getState().steps.map((step) => step.id)
+      ).not.to.include("module");
+
+      pick(el, "ha-yellow");
+      const { selections, steps } = wizardState.getState();
+      expect(selections.haHardware).to.equal(undefined);
+      expect(selections.deviceName).to.equal("Home Assistant Yellow");
+      expect(selections.deviceConfig).to.equal(undefined);
+      expect(steps.map((step) => step.id)).to.include("module");
+      expect(wizardStep("ha-hardware", "module")!.ready!(selections)).to.equal(
+        false
+      );
+    });
+
+    it("hands on the compute modules again when the catalog reloads", async () => {
+      // Back from the module step reloads the catalog, which may have changed
+      select("yellow-cm4", "Home Assistant Yellow with CM4");
+      wizardState.setSelection("yellowModules", []);
+      const el = await fixture(
+        html`<ha-hardware-device-selection-view></ha-hardware-device-selection-view>`
+      );
+      await waitUntil(() => el.shadowRoot!.querySelector("device-card"));
+      expect(
+        wizardState.getState().selections.yellowModules!.map(({ id }) => id)
+      ).to.deep.equal(["yellow-cm4", "yellow-cm5"]);
+    });
 
     it("leaves out the Blue and the CM5 when the catalog lacks their boards", async () => {
       wizardState.startFlow("ha-hardware");
@@ -179,7 +271,11 @@ describe("Home Assistant hardware views", () => {
       const values = [...el.shadowRoot!.querySelectorAll("device-card")].map(
         (card) => card.value
       );
-      expect(values).to.deep.equal(["ha-green", "ha-yellow-cm4"]);
+      expect(values).to.deep.equal(["ha-green", "ha-yellow"]);
+      pick(el, "ha-yellow");
+      expect(
+        wizardState.getState().selections.yellowModules!.map(({ id }) => id)
+      ).to.deep.equal(["yellow-cm4"]);
     });
 
     it("forgets the drive when switching to another device", async () => {
@@ -189,16 +285,12 @@ describe("Home Assistant hardware views", () => {
         html`<ha-hardware-device-selection-view></ha-hardware-device-selection-view>`
       );
       await waitUntil(() => el.shadowRoot!.querySelector("device-card"));
-      const group = el.shadowRoot!.querySelector("wa-radio-group")!;
-
-      group.value = "ha-yellow-cm4";
-      group.dispatchEvent(new Event("change"));
+      pick(el, "ha-yellow");
       expect(wizardState.getState().selections.drive).to.equal(
         MOCK_BLOCK_DEVICES[2].id
       );
 
-      group.value = "ha-yellow-cm5";
-      group.dispatchEvent(new Event("change"));
+      pick(el, "ha-green");
       expect(wizardState.getState().selections.drive).to.equal(undefined);
     });
 
@@ -211,10 +303,111 @@ describe("Home Assistant hardware views", () => {
         html`<ha-hardware-device-selection-view></ha-hardware-device-selection-view>`
       );
       await waitUntil(() => el.shadowRoot!.querySelector("device-card"));
-      const group = el.shadowRoot!.querySelector("wa-radio-group")!;
-      group.value = "ha-green";
-      group.dispatchEvent(new Event("change"));
+      pick(el, "ha-green");
       expect(wizardState.getState().selections.drive).to.equal(undefined);
+    });
+  });
+
+  describe("compute module selection", () => {
+    /** Selections as the device step leaves them for the Yellow. */
+    function pickYellow() {
+      wizardState.startFlow("ha-hardware");
+      wizardState.setSelection("device", "ha-yellow");
+      wizardState.setSelection("deviceName", "Home Assistant Yellow");
+      wizardState.setSelection("yellowModules", [
+        { id: "yellow-cm4", config: configFor("yellow-cm4") },
+        { id: "yellow-cm5", config: configFor("yellow-cm5") },
+      ]);
+    }
+
+    it("offers the compute modules the device step handed on", async () => {
+      pickYellow();
+      const el = await fixture(
+        html`<ha-hardware-module-selection-view></ha-hardware-module-selection-view>`
+      );
+      const cards = el.shadowRoot!.querySelectorAll<OptionCard>("option-card");
+      expect([...cards].map((card) => card.value)).to.deep.equal([
+        "yellow-cm4",
+        "yellow-cm5",
+      ]);
+      expect([...cards].map((card) => card.heading)).to.deep.equal([
+        "Compute Module 4",
+        "Compute Module 5",
+      ]);
+      expect(text(el.shadowRoot!)).to.contain("4 or 5 inside");
+    });
+
+    for (const [id, name, board] of [
+      ["yellow-cm4", "Home Assistant Yellow with CM4", "yellow-installer"],
+      // The installer only boots on a CM4; a CM5 gets Home Assistant OS
+      ["yellow-cm5", "Home Assistant Yellow with CM5", "yellow"],
+    ] as const) {
+      it(`selecting ${id} stores the ${board} board`, async () => {
+        pickYellow();
+        const el = await fixture(
+          html`<ha-hardware-module-selection-view></ha-hardware-module-selection-view>`
+        );
+        let wentOn = 0;
+        el.addEventListener("wizard-next", () => wentOn++);
+        pick(el, id);
+        expect(wentOn).to.equal(1);
+        const selections = wizardState.getState().selections;
+        expect(selections.device).to.equal("ha-yellow");
+        expect(selections.haHardware).to.equal(id);
+        expect(selections.deviceName).to.equal(name);
+        expect(selections.deviceConfig!.board).to.equal(board);
+      });
+    }
+
+    it("forgets the drive when switching to another compute module", async () => {
+      pickYellow();
+      const el = await fixture(
+        html`<ha-hardware-module-selection-view></ha-hardware-module-selection-view>`
+      );
+      pick(el, "yellow-cm4");
+      storeDriveSelection(MOCK_BLOCK_DEVICES[2]);
+
+      pick(el, "yellow-cm4");
+      expect(wizardState.getState().selections.drive).to.equal(
+        MOCK_BLOCK_DEVICES[2].id
+      );
+
+      pick(el, "yellow-cm5");
+      expect(wizardState.getState().selections.drive).to.equal(undefined);
+    });
+
+    it("takes the compute module's storage from the reloaded catalog", async () => {
+      // Back on the device step, the catalog reloaded and changed the CM5's
+      pickYellow();
+      wizardState.setSelection("haHardware", "yellow-cm5");
+      wizardState.setSelection("deviceConfig", configFor("yellow-cm5"));
+      const reloaded = {
+        ...configFor("yellow-cm5"),
+        minimum_storage_bytes: 64_000_000_000,
+      };
+      wizardState.setSelection("yellowModules", [
+        { id: "yellow-cm4", config: configFor("yellow-cm4") },
+        { id: "yellow-cm5", config: reloaded },
+      ]);
+      await fixture(
+        html`<ha-hardware-module-selection-view></ha-hardware-module-selection-view>`
+      );
+      expect(wizardState.getState().selections.deviceConfig).to.equal(reloaded);
+    });
+
+    it("drops a compute module the catalog no longer offers", async () => {
+      pickYellow();
+      wizardState.setSelection("haHardware", "yellow-cm5");
+      wizardState.setSelection("deviceConfig", configFor("yellow-cm5"));
+      wizardState.setSelection("yellowModules", [
+        { id: "yellow-cm4", config: configFor("yellow-cm4") },
+      ]);
+      await fixture(
+        html`<ha-hardware-module-selection-view></ha-hardware-module-selection-view>`
+      );
+      const selections = wizardState.getState().selections;
+      expect(selections.haHardware).to.equal(undefined);
+      expect(selections.deviceConfig).to.equal(undefined);
     });
   });
 
@@ -487,9 +680,9 @@ describe("Home Assistant hardware views", () => {
         [
           "boot mode toggle back to MMC",
           "put the eMMC module back",
-          "Preparing Home Assistant page",
+          "Keep power and Ethernet connected",
         ],
-        "https://www.home-assistant.io/installation/odroid",
+        "https://www.home-assistant.io/installation/odroid/",
       ],
     ] as const) {
       it(`gives the ${id} its own next steps`, async () => {
@@ -499,11 +692,13 @@ describe("Home Assistant hardware views", () => {
         );
         const success = el.shadowRoot!.querySelector("install-success")!;
         await success.updateComplete;
+        expect(success.formatWarning).to.equal(true);
         const content = text(success.shadowRoot!);
         for (const part of expected) {
           expect(content).to.contain(part);
         }
-        expect(content).to.contain("homeassistant.local");
+        // The steps after this one follow the device
+        expect(content).to.contain("Once the device is on, select Next");
         expect(content).not.to.contain(":8123");
         expect(
           success.shadowRoot!.querySelector<HTMLAnchorElement>(
@@ -520,5 +715,28 @@ describe("Home Assistant hardware views", () => {
         );
       });
     }
+
+    it("shows steps that fit any device when none was selected", async () => {
+      // The name and board of the device picked before stay behind
+      select("blue", "Home Assistant Blue");
+      wizardState.setSelection("haHardware", undefined);
+      const el = await fixture(
+        html`<ha-hardware-success-view></ha-hardware-success-view>`
+      );
+      const generic = el.shadowRoot!.querySelector("success-view")!;
+      await generic.updateComplete;
+      const success = generic.shadowRoot!.querySelector("install-success")!;
+      await success.updateComplete;
+      const content = text(success.shadowRoot!);
+      expect(content).to.contain("Insert the written storage into your device");
+      for (const device of ["Green", "Yellow", "Blue"]) {
+        expect(content).not.to.contain(device);
+      }
+      expect(
+        success.shadowRoot!.querySelector<HTMLAnchorElement>(
+          ".next-steps-footer a"
+        )!.href
+      ).to.equal("https://www.home-assistant.io/installation/");
+    });
   });
 });

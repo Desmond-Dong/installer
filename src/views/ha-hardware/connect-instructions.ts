@@ -1,12 +1,11 @@
 import { localize, localizeContent } from "../../localization/localize.js";
 import { LitElement, html, css, nothing, type TemplateResult } from "lit";
 import { customElement, property } from "lit/decorators.js";
-import { openExternalLink } from "../../utils/external-url.js";
+import { renderExternalLink } from "../../utils/external-link.js";
 import { linkStyles } from "../../utils/link-styles.js";
 import { getPlatform } from "../../utils/platform.js";
-import type { HaHardwareId } from "./hardware.js";
-
-const RPIBOOT_URL = "https://github.com/raspberrypi/usbboot";
+import { RPIBOOT_URL } from "../../utils/urls.js";
+import type { HaHardwareId } from "../../state/ha-hardware.js";
 
 /**
  * How to make the storage of a Nabu Casa device show up as a drive on this
@@ -20,18 +19,18 @@ export class HaHardwareConnectInstructions extends LitElement {
       :host {
         display: block;
         width: 100%;
-        max-width: 500px;
+        max-width: var(--ha-content-width);
         margin-bottom: 1.5rem;
       }
 
       .instructions {
         padding: 1rem 1.25rem;
-        background-color: var(--ha-card-background, #ffffff);
-        border: 1px solid var(--ha-border-color, #e0e0e0);
-        border-radius: var(--ha-card-border-radius, 12px);
+        background-color: var(--ha-card-background);
+        border: 1px solid var(--ha-border-color);
+        border-radius: var(--ha-card-border-radius);
         font-size: 0.875rem;
         line-height: 1.5;
-        color: var(--ha-text-color, #212121);
+        color: var(--ha-text-color);
       }
 
       h3 {
@@ -52,7 +51,7 @@ export class HaHardwareConnectInstructions extends LitElement {
 
       ol {
         margin: 0;
-        padding-left: 1.25rem;
+        padding-inline-start: 1.25rem;
       }
 
       li + li {
@@ -60,7 +59,7 @@ export class HaHardwareConnectInstructions extends LitElement {
       }
 
       code {
-        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-family: var(--ha-font-family-code);
         font-size: 0.8125rem;
         overflow-wrap: anywhere;
       }
@@ -70,7 +69,7 @@ export class HaHardwareConnectInstructions extends LitElement {
   @property({ attribute: false })
   hardware?: HaHardwareId;
 
-  render() {
+  render(): TemplateResult | typeof nothing {
     switch (this.hardware) {
       case "green":
         return this._renderBox(
@@ -98,7 +97,8 @@ export class HaHardwareConnectInstructions extends LitElement {
           localize("views.ha_hardware.connect_instructions.blue_title"),
           this._renderBlue()
         );
-      default:
+      // Listing every device makes a new one fail the build until it has steps
+      case undefined:
         return nothing;
     }
   }
@@ -146,13 +146,7 @@ export class HaHardwareConnectInstructions extends LitElement {
 
   // How to run rpiboot, and what the OS asks when the drive shows up.
   private _yellowCm5PlatformSteps() {
-    const rpiboot = html`<a
-      href=${RPIBOOT_URL}
-      target="_blank"
-      rel="noopener noreferrer"
-      @click=${openExternalLink}
-      >rpiboot</a
-    >`;
+    const rpiboot = renderExternalLink(RPIBOOT_URL, "rpiboot");
     const command = html`<code>sudo ./rpiboot -d mass-storage-gadget64</code>`;
     const shortcut = html`<code>rpiboot-CM4-CM5 - Mass Storage Gadget</code>`;
     switch (getPlatform()) {

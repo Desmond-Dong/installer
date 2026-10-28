@@ -1,33 +1,34 @@
 import { localize, localizeContent } from "../../localization/localize.js";
 import { LitElement, html, css, nothing } from "lit";
 import { ViewAccessibility } from "../../utils/view-accessibility.js";
-import { customElement, state } from "lit/decorators.js";
-import { wizardState, type WizardState } from "../../state/wizard-state.js";
-import { formatBytes, getHaosRelease } from "../../api/commands.js";
+import { customElement } from "lit/decorators.js";
+import type { WizardState } from "../../state/wizard-state.js";
+import { WizardStateController } from "../../state/wizard-state-controller.js";
+import { getHaosRelease } from "../../api/commands.js";
+import { formatBytes } from "../../utils/format.js";
 import { selectedWifi } from "../../utils/wifi.js";
+import { driveModelLabel } from "../../utils/drive-selection.js";
 import { renderDriveIcon } from "../../components/drive-icon.js";
 import {
   HaosVersion,
   haIcon,
   renderHaosVersionRow,
-  renderSummaryIcon,
   renderSummaryRow,
   summaryStyles,
-} from "../../components/summary-card.js";
+} from "../../utils/summary-styles.js";
 import {
   findInstaller,
   installerName,
   type HaHardwareInstaller,
-} from "../ha-hardware/hardware.js";
+} from "../../state/ha-hardware.js";
 import "../../components/inline-notice.js";
 import { renderStepHeading, stepStyles } from "../../utils/step-styles.js";
+import { mdiWifi } from "../../utils/icons.js";
+import { renderIcon } from "../../utils/render-icon.js";
 
 // A board, for a device without a picture
 const boardIcon =
   "M6 2C4.9 2 4 2.9 4 4V20C4 21.1 4.9 22 6 22H18C19.1 22 20 21.1 20 20V4C20 2.9 19.1 2 18 2H6ZM6 4H18V20H6V4ZM8 6V8H10V6H8ZM14 6V8H16V6H14ZM11 10V12H13V10H11ZM8 14V16H10V14H8ZM14 14V16H16V14H14Z";
-
-const mdiWifi =
-  "M12,21L15.6,16.2C14.6,15.45 13.35,15 12,15C10.65,15 9.4,15.45 8.4,16.2L12,21M12,3C7.95,3 4.21,4.34 1.2,6.6L3,9C5.5,7.12 8.62,6 12,6C15.38,6 18.5,7.12 21,9L22.8,6.6C19.79,4.34 16.05,3 12,3M12,9C9.3,9 6.81,9.89 4.8,11.4L6.6,13.8C8.1,12.67 9.97,12 12,12C14.03,12 15.9,12.67 17.4,13.8L19.2,11.4C17.19,9.89 14.7,9 12,9Z";
 
 @customElement("confirmation-view")
 export class ConfirmationView extends LitElement {
@@ -53,13 +54,12 @@ export class ConfirmationView extends LitElement {
         display: flex;
         align-items: center;
         justify-content: center;
-        background-color: var(--ha-border-color, #e0e0e0);
-        border-radius: 8px;
+        background-color: var(--ha-border-color);
+        border-radius: var(--ha-small-border-radius);
       }
 
       .drive-path {
-        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        overflow-wrap: anywhere;
+        font-family: var(--ha-font-family-code);
       }
 
       inline-notice {
@@ -68,8 +68,11 @@ export class ConfirmationView extends LitElement {
     `,
   ];
 
-  @state()
-  private _wizardState: WizardState = wizardState.getState();
+  private readonly _wizard = new WizardStateController(this);
+
+  private get _wizardState(): WizardState {
+    return this._wizard.state;
+  }
 
   private readonly _haosVersion = new HaosVersion(this, () => {
     const board = this._wizardState.selections.deviceConfig?.board;
@@ -78,20 +81,6 @@ export class ConfirmationView extends LitElement {
     if (!board) throw new Error("No board selected");
     return getHaosRelease(undefined, board);
   });
-
-  private _unsubscribe?: () => void;
-
-  connectedCallback() {
-    super.connectedCallback();
-    this._unsubscribe = wizardState.subscribe((state) => {
-      this._wizardState = state;
-    });
-  }
-
-  disconnectedCallback() {
-    super.disconnectedCallback();
-    this._unsubscribe?.();
-  }
 
   render() {
     const selections = this._wizardState.selections;
@@ -103,9 +92,10 @@ export class ConfirmationView extends LitElement {
     // The path is what actually gets written to, so show it alongside the
     // friendly name: two identical cards are otherwise indistinguishable.
     const drivePath = selections.drive || "";
-    const driveModel = [selections.driveVendor, selections.driveModel]
-      .filter(Boolean)
-      .join(" ");
+    const driveModel = driveModelLabel(
+      selections.driveVendor,
+      selections.driveModel
+    );
     const deviceConfig = selections.deviceConfig;
     const installer = findInstaller(deviceConfig?.board);
     const wifi = selectedWifi(selections);
@@ -119,26 +109,20 @@ export class ConfirmationView extends LitElement {
       <div class="summary-card">
         <!-- Device -->
         ${renderSummaryRow(
+          // The device's name is right next to its picture
           deviceImage
             ? html`<img
                 class=${deviceImage.endsWith(".svg")
                   ? "device-icon"
                   : "device-image"}
                 src=${deviceImage}
-                alt=${deviceName}
+                alt=""
               />`
             : html`<div class="device-image-placeholder">
-                ${renderSummaryIcon(boardIcon)}
+                ${renderIcon(boardIcon)}
               </div>`,
           localize("common.device"),
-          deviceName,
-          deviceConfig && !installer
-            ? html`<p class="summary-detail">
-                ${localizeContent("views.sbc.confirmation_view.board_summary", {
-                  board: deviceConfig.board,
-                })}
-              </p>`
-            : nothing
+          deviceName
         )}
 
         <div class="divider"></div>
@@ -149,12 +133,20 @@ export class ConfirmationView extends LitElement {
           localize("common.target_drive"),
           driveName,
           html`<p class="summary-detail">
-              ${this._formatSize(driveSize)}${driveModel
-                ? ` · ${driveModel}`
-                : nothing}
+              ${driveModel
+                ? localizeContent(
+                    "views.sbc.confirmation_view.drive_size_and_model",
+                    {
+                      size: this._formatSize(driveSize),
+                      model: html`<bdi>${driveModel}</bdi>`,
+                    }
+                  )
+                : this._formatSize(driveSize)}
             </p>
             ${drivePath
-              ? html`<p class="summary-detail drive-path">${drivePath}</p>`
+              ? html`<p class="summary-detail drive-path">
+                  <bdi>${drivePath}</bdi>
+                </p>`
               : nothing}`
         )}
 
@@ -200,7 +192,7 @@ export class ConfirmationView extends LitElement {
     return html`
       <div class="divider"></div>
       ${renderSummaryRow(
-        renderSummaryIcon(mdiWifi),
+        renderIcon(mdiWifi),
         localize("views.sbc.confirmation_view.wifi"),
         network
       )}

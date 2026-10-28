@@ -83,6 +83,46 @@ describe("info-dialog", () => {
       .exist;
   });
 
+  it("makes the secondary button stand out when asked to", async () => {
+    const el = await fixture<InfoDialog>(html`
+      <info-dialog
+        open
+        primary-label="Reinstall"
+        secondary-label="Go back"
+        emphasis="secondary"
+      ></info-dialog>
+    `);
+
+    const [secondary, primary] = el.shadowRoot!.querySelectorAll("wa-button");
+    expect(secondary.textContent!.trim()).to.equal("Go back");
+    expect(secondary.getAttribute("variant")).to.equal("brand");
+    expect(secondary.getAttribute("appearance")).to.equal("accent");
+    expect(primary.textContent!.trim()).to.equal("Reinstall");
+    expect(primary.getAttribute("variant")).to.equal("neutral");
+    expect(primary.getAttribute("appearance")).to.equal("outlined");
+  });
+
+  it("warns in its title when the primary action can't be undone", async () => {
+    const el = await fixture<InfoDialog>(html`
+      <info-dialog open primary-variant="danger"></info-dialog>
+    `);
+
+    const title = el.shadowRoot!.querySelector(".dialog-title")!;
+    expect(title.classList.contains("warning")).to.be.true;
+    expect(title.querySelector(".warning-icon")).to.exist;
+    expect(title.querySelector(".info-icon")).to.be.null;
+  });
+
+  it("informs in its title otherwise", async () => {
+    const el = await fixture<InfoDialog>(html`
+      <info-dialog open></info-dialog>
+    `);
+
+    const title = el.shadowRoot!.querySelector(".dialog-title")!;
+    expect(title.classList.contains("warning")).to.be.false;
+    expect(title.querySelector(".warning-icon")).to.be.null;
+  });
+
   it("does not render secondary button by default", async () => {
     const el = await fixture<InfoDialog>(html`
       <info-dialog open></info-dialog>
@@ -234,6 +274,38 @@ describe("info-dialog", () => {
     afterHide();
 
     expect(secondaryCount).to.equal(1);
+  });
+
+  it("reports the primary action once, however often it is clicked", async () => {
+    const el = await fixture<InfoDialog>(html`
+      <info-dialog open secondary-label="Go back"></info-dialog>
+    `);
+
+    const events: string[] = [];
+    el.addEventListener("dialog-primary", () => events.push("primary"));
+    el.addEventListener("dialog-secondary", () => events.push("secondary"));
+    const [secondary, primary] = el.shadowRoot!.querySelectorAll("wa-button");
+    primary.click();
+    primary.click();
+    secondary.click();
+
+    expect(events).to.deep.equal(["primary"]);
+  });
+
+  it("reports the secondary action once, however often it is clicked", async () => {
+    const el = await fixture<InfoDialog>(html`
+      <info-dialog open secondary-label="Go back"></info-dialog>
+    `);
+
+    const events: string[] = [];
+    el.addEventListener("dialog-primary", () => events.push("primary"));
+    el.addEventListener("dialog-secondary", () => events.push("secondary"));
+    const [secondary, primary] = el.shadowRoot!.querySelectorAll("wa-button");
+    secondary.click();
+    secondary.click();
+    primary.click();
+
+    expect(events).to.deep.equal(["secondary"]);
   });
 
   it("stays silent when a consumer closes it programmatically", async () => {

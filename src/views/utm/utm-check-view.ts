@@ -1,16 +1,13 @@
 import { localize, localizeContent } from "../../localization/localize.js";
 import {
   installerError,
-  renderErrorHelp,
   type InstallerError,
 } from "../../utils/installer-error.js";
 import { linkStyles } from "../../utils/link-styles.js";
 import { LitElement, html, css, nothing } from "lit";
-import {
-  ViewAccessibility,
-  reducedMotionStyles,
-} from "../../utils/view-accessibility.js";
-import { InstallDiagnostics } from "../../utils/diagnostics.js";
+import { ViewAccessibility } from "../../utils/view-accessibility.js";
+import { recordFailure } from "../../utils/diagnostics.js";
+import { LatestRequest } from "../../utils/latest-request.js";
 import { customElement, query, state } from "lit/decorators.js";
 import { checkUtmAutomation, checkUtmStatus } from "../../api/commands.js";
 import type { UtmStatus } from "../../api/types.js";
@@ -19,35 +16,29 @@ import { openExternalUrl } from "../../utils/external-url.js";
 import "@home-assistant/webawesome/dist/components/button/button.js";
 import "../../components/ha-svg-icon.js";
 import "../../components/casita-mascot.js";
-import "../../components/inline-notice.js";
 import { renderStepHeading, stepStyles } from "../../utils/step-styles.js";
-
-// mdi:download
-const mdiDownload = "M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z";
-// mdi:refresh
-const mdiRefresh =
-  "M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z";
+import { panelStyles } from "../../utils/panel-styles.js";
+import {
+  renderRetryButton,
+  renderStatusRow,
+  statusRowStyles,
+} from "../../utils/load-state.js";
+import { materialDownload, materialRefresh } from "../../utils/icons.js";
 
 @customElement("utm-check-view")
 export class UtmCheckView extends LitElement {
   protected readonly _accessibility = new ViewAccessibility(this);
   static styles = [
     stepStyles,
-    reducedMotionStyles,
+    statusRowStyles,
     linkStyles,
     css`
+      /* Casita over one status and the buttons that go with it, closer
+         together than the fields and rows of other panels */
       .status-card {
-        display: flex;
-        flex-direction: column;
+        ${panelStyles}
         align-items: center;
         gap: 1rem;
-        padding: 1.25rem;
-        background-color: var(--ha-card-background, #ffffff);
-        border: 1px solid var(--ha-border-color, #e0e0e0);
-        border-radius: var(--ha-card-border-radius, 12px);
-        width: 100%;
-        box-sizing: border-box;
-        max-width: 500px;
       }
 
       casita-mascot {
@@ -61,121 +52,23 @@ export class UtmCheckView extends LitElement {
         position: absolute;
       }
 
-      .status-row {
-        display: flex;
-        align-items: center;
-        gap: 0.75rem;
-      }
-
-      .status-icon {
-        width: 28px;
-        height: 28px;
-        border-radius: 50%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        flex-shrink: 0;
-      }
-
-      .status-icon.loading {
-        width: 24px;
-        height: 24px;
-        background: none;
-      }
-
-      .status-icon.success {
-        background-color: #4caf50;
-      }
-
-      .status-icon.warning {
-        background-color: #ff9800;
-      }
-
-      .status-icon svg {
-        width: 16px;
-        height: 16px;
-        fill: white;
-      }
-
-      .spinner {
-        width: 24px;
-        height: 24px;
-        border: 2px solid var(--ha-secondary-text-color, #727272);
-        border-top-color: transparent;
-        border-radius: 50%;
-        animation: spin 1s linear infinite;
-      }
-
-      @keyframes spin {
-        to {
-          transform: rotate(360deg);
-        }
-      }
-
-      .status-text {
-        display: flex;
-        flex-direction: column;
-      }
-
       .status-text.unavailable {
         text-align: center;
       }
 
-      .status-title {
-        font-size: 1rem;
-        font-weight: 500;
-        color: var(--ha-text-color, #212121);
-        margin: 0;
-      }
-
-      .status-description {
-        font-size: 0.8125rem;
-        color: var(--ha-secondary-text-color, #727272);
-        margin: 0.25rem 0 0 0;
-      }
-
       .version-info {
         font-size: 0.75rem;
-        color: var(--ha-secondary-text-color, #9e9e9e);
+        color: var(--ha-secondary-text-color);
         margin: 0;
       }
 
-      inline-notice {
-        margin-bottom: 1rem;
-      }
-
-      .warning-title {
+      .testing-note {
+        max-width: var(--ha-content-width);
+        margin: 0 0 1.5rem;
         font-size: 0.875rem;
-        font-weight: 500;
-        color: var(--ha-warning-heading-color, #212121);
-        margin: 0;
-      }
-
-      .warning-description {
-        font-size: 0.8125rem;
-        color: var(--ha-text-color, #212121);
-        margin: 0;
-      }
-
-      .warning-list {
-        list-style: none;
-        padding: 0;
-        margin: 0;
-        font-size: 0.8125rem;
-        color: var(--ha-text-color, #212121);
-      }
-
-      .warning-list li {
-        padding-left: 1rem;
-        position: relative;
-        line-height: 1.4;
-      }
-
-      .warning-list li::before {
-        content: "•";
-        position: absolute;
-        left: 0;
-        color: #ff9800;
+        line-height: 1.5;
+        color: var(--ha-secondary-text-color);
+        text-align: center;
       }
 
       wa-button ha-svg-icon {
@@ -200,30 +93,31 @@ export class UtmCheckView extends LitElement {
   @query(".status .status-title")
   private _statusTitle?: HTMLElement;
 
-  /** Bumped per check, so only the latest one decides */
-  private _check = 0;
+  /** Only the latest check decides */
+  private readonly _checks = new LatestRequest(this);
 
   connectedCallback() {
     super.connectedCallback();
     void this._checkStatus();
   }
 
-  disconnectedCallback() {
-    super.disconnectedCallback();
-    this._check++;
+  /** Asked once a flow: macOS keeps the answer */
+  private get _controlAllowed() {
+    return !!wizardState.getState().selections.utmControlAllowed;
   }
 
-  private async _checkStatus() {
-    const check = ++this._check;
-    const flowGeneration = wizardState.flowGeneration;
+  /**
+   * Whether UTM is installed, and with `askControl`, whether the installer
+   * may control it. Asking opens UTM and can show the macOS prompt over the
+   * step, so it waits until the user asks for it.
+   */
+  private async _checkStatus({ askControl = false } = {}) {
     // The Automation prompt can stay open while the user leaves the step;
     // its answer then belongs to no flow
-    const isCurrent = () =>
-      this.isConnected &&
-      check === this._check &&
-      flowGeneration === wizardState.flowGeneration;
+    const check = this._checks.start();
     // The previous result, and its buttons, stay until this one replaces it
     this._loading = true;
+    this._askingAutomation = askControl && !this._controlAllowed;
     // Coming back from a later step left this set: Next waits for the check
     wizardState.setSelection("utmInstalled", false);
 
@@ -233,14 +127,14 @@ export class UtmCheckView extends LitElement {
     let status: UtmStatus | undefined;
     try {
       status = await checkUtmStatus();
-      if (!isCurrent()) return;
+      if (!check.current) return;
 
-      // Ask for Automation now, not after the download: a refusal then
-      // costs nothing, and an unnoticed prompt can't stall the install
-      if (status.installed) {
-        this._askingAutomation = true;
+      // Asked before the download: a refusal then costs nothing, and an
+      // unnoticed prompt can't stall the install
+      if (status.installed && this._askingAutomation) {
         await checkUtmAutomation();
-        if (!isCurrent()) return;
+        if (!check.current) return;
+        wizardState.setSelection("utmControlAllowed", true);
       }
 
       // Store UTM installed status in wizard state
@@ -248,16 +142,16 @@ export class UtmCheckView extends LitElement {
       this._error = null;
       wizardState.setSelection("utmInstalled", status.installed);
     } catch (error) {
-      if (!isCurrent()) return;
+      if (!check.current) return;
       if (status) this._utmStatus = status;
-      new InstallDiagnostics("utm").fail(error);
+      recordFailure("utm", error);
       this._error = installerError(
         error,
         localize("views.utm.utm_check_view.failed_to_check_utm_status")
       );
       wizardState.setSelection("utmInstalled", false);
     } finally {
-      if (check === this._check) {
+      if (check.latest) {
         this._loading = false;
         this._askingAutomation = false;
       }
@@ -266,8 +160,13 @@ export class UtmCheckView extends LitElement {
     // The button that started the check can be gone now, as when UTM was
     // found: continue from what the check found
     await this.updateComplete;
-    if (!isCurrent()) return;
+    if (!check.current) return;
     this._accessibility.restoreFocus(this._statusTitle);
+  }
+
+  /** Opens UTM, and macOS asks unless it was answered before. */
+  private _allowControl() {
+    return this._checkStatus({ askControl: true });
   }
 
   /** An Intel Mac: nothing to fix or retry, this option just isn't for it. */
@@ -282,7 +181,7 @@ export class UtmCheckView extends LitElement {
         localize("views.utm.utm_check_view.virtual_machine_setup"),
         localize("views.utm.utm_check_view.subtitle")
       )}
-      ${this._unavailable ? "" : this._renderTestingWarning()}
+      ${this._unavailable ? "" : this._renderTestingNote()}
 
       <div class="status-card">
         <casita-mascot
@@ -328,19 +227,26 @@ export class UtmCheckView extends LitElement {
   private _renderActions() {
     if (this._unavailable) return "";
     if (this._error) {
+      // Once UTM was found, what failed is asking macOS
       return this._error.retryable
-        ? html`<wa-button
-            variant="brand"
-            appearance="outlined"
-            ?loading=${this._loading}
-            @click=${this._checkStatus}
-          >
-            ${this._renderRefreshIcon()}
-            ${localize("views.utm.utm_check_view.retry_check")}
-          </wa-button>`
+        ? renderRetryButton(this._loading, () =>
+            this._checkStatus({ askControl: !!this._utmStatus?.installed })
+          )
         : "";
     }
-    if (!this._utmStatus || this._utmStatus.installed) return "";
+    if (!this._utmStatus) return "";
+    if (this._utmStatus.installed) {
+      return this._controlAllowed
+        ? ""
+        : html`<wa-button
+            variant="brand"
+            appearance="accent"
+            ?loading=${this._loading}
+            @click=${this._allowControl}
+          >
+            ${localize("views.utm.utm_check_view.allow_control")}
+          </wa-button>`;
+    }
     return html`
       <wa-button
         variant="brand"
@@ -362,26 +268,10 @@ export class UtmCheckView extends LitElement {
     `;
   }
 
-  private _renderTestingWarning() {
-    return html`
-      <inline-notice>
-        <p class="warning-title">
-          ${localize("views.utm.utm_check_view.best_for_testing_evaluation")}
-        </p>
-        <p class="warning-description">
-          ${localize("views.utm.utm_check_view.testing_notice")}
-        </p>
-        <ul class="warning-list">
-          <li>${localize("views.utm.utm_check_view.mac_must_stay_on")}</li>
-          <li>${localize("views.utm.utm_check_view.no_autostart")}</li>
-          <li>
-            ${localize(
-              "views.utm.utm_check_view.dedicated_hardware_recommended"
-            )}
-          </li>
-        </ul>
-      </inline-notice>
-    `;
+  private _renderTestingNote() {
+    return html`<p class="testing-note">
+      ${localize("views.utm.utm_check_view.testing_note")}
+    </p>`;
   }
 
   private _renderUnavailable() {
@@ -400,108 +290,64 @@ export class UtmCheckView extends LitElement {
   }
 
   private _renderLoading() {
-    return html`
-      <div class="status-row">
-        <div class="status-icon loading">
-          <div class="spinner"></div>
-        </div>
-        <div class="status-text">
-          <p class="status-title">
-            ${this._askingAutomation
-              ? localize("views.utm.utm_check_view.allow_control_of_utm")
-              : localize("views.utm.utm_check_view.checking_for_utm")}
-          </p>
-          ${this._askingAutomation
-            ? html`<p class="status-description">
-                ${localize(
-                  "views.utm.utm_check_view.allow_control_of_utm_description"
-                )}
-              </p>`
-            : ""}
-        </div>
-      </div>
-    `;
+    return this._askingAutomation
+      ? renderStatusRow(
+          "loading",
+          localize("views.utm.utm_check_view.allow_control_of_utm"),
+          localize("views.utm.utm_check_view.allow_control_of_utm_description")
+        )
+      : renderStatusRow(
+          "loading",
+          localize("views.utm.utm_check_view.checking_for_utm")
+        );
   }
 
   private _renderError() {
-    return html`
-      <div class="status-row" role="alert">
-        <div class="status-icon warning">
-          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-            <path
-              d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"
-            />
-          </svg>
-        </div>
-        <div class="status-text">
-          <p class="status-title">
-            ${localize("views.utm.utm_check_view.error_checking_utm")}
-          </p>
-          <p class="status-description" style="overflow-wrap: anywhere;">
-            ${this._error?.message}
-          </p>
-          ${renderErrorHelp()}
-        </div>
-      </div>
-    `;
+    return renderStatusRow(
+      "error",
+      localize("views.utm.utm_check_view.error_checking_utm"),
+      this._error?.message
+    );
   }
 
   private _renderInstalled() {
-    return html`
-      <div class="status-row">
-        <div class="status-icon success">
-          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-            <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
-          </svg>
-        </div>
-        <div class="status-text">
-          <p class="status-title">
-            ${this._utmStatus?.version
-              ? localizeContent("utm.installed_with_version", {
-                  version: html`<span class="version-info"
-                    >${localize("utm.version", {
-                      version: this._utmStatus.version,
-                    })}</span
-                  >`,
-                })
-              : localize("utm.installed")}
-          </p>
-          <p class="status-description">
-            ${localize("views.utm.utm_check_view.ready")}
-          </p>
-        </div>
-      </div>
-    `;
+    return renderStatusRow(
+      "success",
+      this._utmStatus?.version
+        ? localizeContent("views.utm.utm_check_view.installed_with_version", {
+            version: html`<span class="version-info"
+              >${localize("views.utm.utm_check_view.version", {
+                version: this._utmStatus.version,
+              })}</span
+            >`,
+          })
+        : localize("views.utm.utm_check_view.installed"),
+      this._controlAllowed
+        ? localize("views.utm.utm_check_view.ready")
+        : localize("views.utm.utm_check_view.allow_control_needed")
+    );
   }
 
   private _renderNotInstalled() {
-    return html`
-      <div class="status-row">
-        <div class="status-icon warning">
-          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-            <path
-              d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"
-            />
-          </svg>
-        </div>
-        <div class="status-text">
-          <p class="status-title">
-            ${localize("views.utm.utm_check_view.utm_is_not_installed")}
-          </p>
-          <p class="status-description">
-            ${localize("views.utm.utm_check_view.not_installed_description")}
-          </p>
-        </div>
-      </div>
-    `;
+    return renderStatusRow(
+      "warning",
+      localize("views.utm.utm_check_view.utm_is_not_installed"),
+      localize("views.utm.utm_check_view.not_installed_description")
+    );
   }
 
   private _renderDownloadIcon() {
-    return html`<ha-svg-icon slot="start" .path=${mdiDownload}></ha-svg-icon>`;
+    return html`<ha-svg-icon
+      slot="start"
+      .path=${materialDownload}
+    ></ha-svg-icon>`;
   }
 
   private _renderRefreshIcon() {
-    return html`<ha-svg-icon slot="start" .path=${mdiRefresh}></ha-svg-icon>`;
+    return html`<ha-svg-icon
+      slot="start"
+      .path=${materialRefresh}
+    ></ha-svg-icon>`;
   }
 
   private async _openUtmDownload() {

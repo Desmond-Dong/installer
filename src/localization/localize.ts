@@ -1,49 +1,20 @@
 import { IntlMessageFormat, type PrimitiveType } from "intl-messageformat";
 import messages from "./en.json";
-import zhMessages from "./zh.json";
 
 export type MessageKey = keyof typeof messages;
-
-const catalogs: Record<string, typeof messages> = {
-  en: messages,
-  zh: zhMessages,
-};
+/** A translation of en.json. A key it lacks shows the English. */
+export type Catalog = Record<string, unknown>;
 
 let language = "en";
-const formatters = new Map<MessageKey, IntlMessageFormat>();
+// English text needs English plural rules, even in another language's UI
+let english = "en";
+let translation: Catalog = {};
+const formatters = new Map<string, IntlMessageFormat>();
 
-/** The catalog for the resolved language, falling back to the English one. */
-function catalog(): typeof messages {
-  // noUncheckedIndexedAccess flags Record lookups; the merged catalogs are
-  // complete, so falling back to the English one is only defensive.
-  return (
-    catalogs[language.toLowerCase().startsWith("zh") ? "zh" : "en"] ?? messages
-  );
-}
-
-export function resolveLanguage(preferences: readonly string[]): string {
-  for (const preference of preferences) {
-    try {
-      const [locale] = Intl.getCanonicalLocales(preference);
-      // English keeps its regional formatting. The Simplified Chinese
-      // catalog covers the remaining zh tags; traditional variants fall
-      // back rather than show the wrong script.
-      const tags = (locale ?? "").split("-");
-      if (tags[0] === "en") return locale!;
-      if (
-        tags[0] === "zh" &&
-        !/^(hant|tw|hk|mo)/.test((tags[1] ?? "").toLowerCase())
-      )
-        return locale!;
-    } catch {
-      // Invalid OS/browser locale tags must not prevent startup.
-    }
-  }
-  return "en";
-}
-
-export function setLanguage(preferences: readonly string[]): void {
-  language = resolveLanguage(preferences);
+export function setLanguage(tag: string, catalog: Catalog = {}): void {
+  language = tag;
+  english = new Intl.Locale(tag).language === "en" ? tag : "en";
+  translation = catalog;
   formatters.clear();
 }
 
@@ -51,28 +22,40 @@ export function getLanguage(): string {
   return language;
 }
 
-function formatter(key: MessageKey): IntlMessageFormat {
-  let result = formatters.get(key);
+function formatter(message: string, locale: string): IntlMessageFormat {
+  const id = `${locale}:${message}`;
+  let result = formatters.get(id);
   if (!result) {
     // Catalog values are text, never HTML. Rich placeholders come from Lit code.
-    result = new IntlMessageFormat(
-      catalog()[key] ?? messages[key],
-      language,
-      undefined,
-      {
-        ignoreTag: true,
-      }
-    );
-    formatters.set(key, result);
+    result = new IntlMessageFormat(message, locale, undefined, {
+      ignoreTag: true,
+    });
+    formatters.set(id, result);
   }
   return result;
+}
+
+function format<T = void>(
+  key: MessageKey,
+  values?: Record<string, PrimitiveType | T>
+): string | T | (string | T)[] {
+  const translated = translation[key];
+  // An export can list untranslated keys with empty text
+  if (typeof translated === "string" && translated.trim()) {
+    try {
+      return formatter(translated, language).format<T>(values);
+    } catch {
+      // A broken translation must not hide the English
+    }
+  }
+  return formatter(messages[key], english).format<T>(values);
 }
 
 export function localize(
   key: MessageKey,
   values?: Record<string, PrimitiveType>
 ): string {
-  return formatter(key).format(values) as string;
+  return format(key, values) as string;
 }
 
 /**
@@ -87,7 +70,7 @@ export function localizeBackend(
   if (
     typeof key !== "string" ||
     !key.startsWith("backend.") ||
-    !Object.prototype.hasOwnProperty.call(catalog(), key)
+    !Object.prototype.hasOwnProperty.call(messages, key)
   ) {
     return undefined;
   }
@@ -115,7 +98,7 @@ export function localizeBackend(
 
   let text: string;
   try {
-    text = formatter(key as MessageKey).format(params) as string;
+    text = format(key as MessageKey, params) as string;
   } catch {
     // A parameter the catalog expects is missing: the English is better
     return undefined;
@@ -129,7 +112,7 @@ export function localizeContent(
   key: MessageKey,
   values?: Record<string, unknown>
 ): unknown {
-  return formatter(key).format<unknown>(values);
+  return format<unknown>(key, values);
 }
 
 export function formatNumber(
@@ -137,4 +120,21 @@ export function formatNumber(
   options: Intl.NumberFormatOptions = {}
 ): string {
   return new Intl.NumberFormat(language, options).format(value);
+}
+
+/** Items as a sentence's list, with the separators and "and" of the language */
+export function formatList(items: string[]): string {
+  return new Intl.ListFormat(language, { type: "conjunction" }).format(items);
+}
+
+/**
+ * The same list in parts, for items that are styled or linked: each "element"
+ * is one of `items`, in order, and each "literal" is what goes between them.
+ */
+export function formatListParts(
+  items: string[]
+): { type: "element" | "literal"; value: string }[] {
+  return new Intl.ListFormat(language, {
+    type: "conjunction",
+  }).formatToParts(items);
 }

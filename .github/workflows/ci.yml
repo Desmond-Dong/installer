@@ -36,9 +36,9 @@ env:
 
 # Release runs build the installers users download, so no job restores a
 # cache there that another run could have written. Only runs on main save
-# the cargo caches: GitHub keeps 10 GB per repository, and a pull request's
-# copy, which only that pull request can restore, evicts the ones on main
-# that every pull request starts from.
+# the cargo and apt caches: GitHub keeps 10 GB per repository, and a pull
+# request's copy, which only that pull request can restore, evicts the ones
+# on main that every pull request starts from.
 
 jobs:
   audit-frontend:
@@ -58,12 +58,11 @@ jobs:
 
       # npm audit can't skip an advisory, so this reads its report and fails
       # on every advisory that isn't accepted below. Only accept one that has
-      # no fixed release yet, and say why it can't hurt us:
-      # - GHSA-vfj7-8cjw-p6xm: braces, through @web/test-runner, which only
-      #   expands the glob patterns in our own test config.
+      # no fixed release yet, and say here why it can't hurt us. Separate the
+      # IDs with spaces.
       - name: Audit npm dependencies
         env:
-          ACCEPTED_ADVISORIES: GHSA-vfj7-8cjw-p6xm
+          ACCEPTED_ADVISORIES: ""
         run: |
           npm audit --package-lock-only --json > "$RUNNER_TEMP/audit.json" || true
           jq -nr --arg accepted "$ACCEPTED_ADVISORIES" '
@@ -107,7 +106,7 @@ jobs:
 
       - name: Install cargo-audit
         if: steps.lock.outputs.audit == 'true'
-        uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-audit@0.22.2
 
@@ -193,7 +192,7 @@ jobs:
           persist-credentials: false
 
       - name: Run zizmor
-        uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
+        uses: zizmorcore/zizmor-action@53290badfa369cb0bf7ad16342cb62c2fa47ac7b # v0.8.0
         with:
           version: latest
 
@@ -267,7 +266,7 @@ jobs:
 
       - name: Install cargo-shear
         if: runner.os == 'Linux'
-        uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-shear
 
@@ -277,11 +276,39 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # The Ubuntu mirror the runners download from sometimes serves packages
+      # at a few kB/s, which held the install up for as long as 45 minutes.
+      # apt keeps what it downloads in a folder of its own that is cached, so
+      # it only downloads packages that changed since main last saved it.
+      # autoclean drops the versions the mirror no longer has, and the key
+      # names the packages left, so main saves a new copy when they change.
+      - name: Restore apt packages (Linux)
+        if: runner.os == 'Linux' && github.event_name != 'workflow_dispatch'
+        id: apt-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/apt-archives/*.deb
+          key: apt-${{ matrix.os }}-tauri-
+
       - name: Install Tauri dependencies (Linux)
         if: runner.os == 'Linux'
+        id: apt
+        env:
+          APT_CACHE_KEY: apt-${{ matrix.os }}-tauri-
         run: |
+          sudo install -d -o _apt /tmp/apt-archives/partial
+          echo 'Dir::Cache::Archives "/tmp/apt-archives";' | sudo tee /etc/apt/apt.conf.d/90-ci-archives > /dev/null
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get autoclean
+          echo "key=$APT_CACHE_KEY$(printf '%s\n' /tmp/apt-archives/*.deb | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - name: Save apt packages (Linux)
+        if: runner.os == 'Linux' && github.event_name == 'push' && steps.apt.outputs.key != steps.apt-cache.outputs.cache-matched-key
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/apt-archives/*.deb
+          key: ${{ steps.apt.outputs.key }}
 
       # Formatting and unused dependencies don't depend on the platform, so
       # one runner is enough. Clippy and the tests below do: the disk code is
@@ -375,12 +402,36 @@ jobs:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-${{ steps.playwright.outputs.version }}-${{ matrix.browser }}
 
+      # The system packages behind `--with-deps` are cached like in
+      # lint-backend, not with the browser.
+      - name: Restore apt packages
+        if: github.event_name != 'workflow_dispatch'
+        id: apt-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/apt-archives/*.deb
+          key: apt-playwright-${{ matrix.browser }}-
+
       # The E2E suite drives the Vite dev server in a browser, where the
       # frontend falls back to mock data instead of Tauri commands — no Rust
-      # toolchain or Tauri system libraries needed. The system packages behind
-      # `--with-deps` are not covered by the cache, so this always runs.
+      # toolchain or Tauri system libraries needed.
       - name: Install Playwright browser
-        run: npx playwright install --with-deps ${{ matrix.browser }}
+        id: apt
+        env:
+          APT_CACHE_KEY: apt-playwright-${{ matrix.browser }}-
+        run: |
+          sudo install -d -o _apt /tmp/apt-archives/partial
+          echo 'Dir::Cache::Archives "/tmp/apt-archives";' | sudo tee /etc/apt/apt.conf.d/90-ci-archives > /dev/null
+          npx playwright install --with-deps ${{ matrix.browser }}
+          sudo apt-get autoclean
+          echo "key=$APT_CACHE_KEY$(printf '%s\n' /tmp/apt-archives/*.deb | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - name: Save apt packages
+        if: github.event_name == 'push' && steps.apt.outputs.key != steps.apt-cache.outputs.cache-matched-key
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/apt-archives/*.deb
+          key: ${{ steps.apt.outputs.key }}
 
       - name: Run E2E tests
         run: npm run test:e2e -- --project=${{ matrix.browser }} --shard=${{ matrix.shard }}/3
@@ -415,7 +466,7 @@ jobs:
 
       - name: Install cargo-llvm-cov
         if: runner.os == 'Linux'
-        uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-llvm-cov
 
@@ -425,11 +476,34 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # Cached like in lint-backend
+      - name: Restore apt packages (Linux)
+        if: runner.os == 'Linux' && github.event_name != 'workflow_dispatch'
+        id: apt-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/apt-archives/*.deb
+          key: apt-${{ matrix.os }}-tauri-
+
       - name: Install Tauri dependencies (Linux)
         if: runner.os == 'Linux'
+        id: apt
+        env:
+          APT_CACHE_KEY: apt-${{ matrix.os }}-tauri-
         run: |
+          sudo install -d -o _apt /tmp/apt-archives/partial
+          echo 'Dir::Cache::Archives "/tmp/apt-archives";' | sudo tee /etc/apt/apt.conf.d/90-ci-archives > /dev/null
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get autoclean
+          echo "key=$APT_CACHE_KEY$(printf '%s\n' /tmp/apt-archives/*.deb | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - name: Save apt packages (Linux)
+        if: runner.os == 'Linux' && github.event_name == 'push' && steps.apt.outputs.key != steps.apt-cache.outputs.cache-matched-key
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/apt-archives/*.deb
+          key: ${{ steps.apt.outputs.key }}
 
       # Coverage comes from the Linux run; the other platforms only need to pass.
       - name: Run tests with coverage
@@ -475,6 +549,9 @@ jobs:
       # Signing needs secrets the release environment holds; other branches,
       # like the China mirror branch, build unsigned DMGs.
       SIGN_MACOS: ${{ matrix.os == 'macos-latest' && github.ref == 'refs/heads/main' }}
+      # Bundles hai-live, the program on the live USB stick. Only release
+      # builds use it, so other builds don't need hai-live built first.
+      LIVE_USB_CONFIG: crates/hai-desktop/tauri.live-usb.conf.json
     strategy:
       fail-fast: false
       matrix:
@@ -503,7 +580,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
-          targets: ${{ matrix.rust-targets }}
+          targets: ${{ matrix.rust-targets }},x86_64-unknown-linux-musl
 
       # Tauri names the bundles and reports the app version after the version
       # in the workspace Cargo.toml, which stays at 0.0.0 on main. A release
@@ -537,21 +614,53 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # Cached like in lint-backend
+      - name: Restore apt packages (Linux)
+        if: runner.os == 'Linux' && github.event_name != 'workflow_dispatch'
+        id: apt-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/apt-archives/*.deb
+          key: apt-${{ matrix.os }}-tauri-
+
       - name: Install Tauri dependencies (Linux)
         if: runner.os == 'Linux'
+        id: apt
+        env:
+          APT_CACHE_KEY: apt-${{ matrix.os }}-tauri-
         run: |
+          sudo install -d -o _apt /tmp/apt-archives/partial
+          echo 'Dir::Cache::Archives "/tmp/apt-archives";' | sudo tee /etc/apt/apt.conf.d/90-ci-archives > /dev/null
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          # The AppImage bundles these GStreamer plugins, so its WebKit can play audio
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-pulseaudio
+          sudo apt-get autoclean
+          echo "key=$APT_CACHE_KEY$(printf '%s\n' /tmp/apt-archives/*.deb | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - name: Save apt packages (Linux)
+        if: runner.os == 'Linux' && github.event_name == 'push' && steps.apt.outputs.key != steps.apt-cache.outputs.cache-matched-key
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/apt-archives/*.deb
+          key: ${{ steps.apt.outputs.key }}
 
       - name: Install dependencies
         run: npm ci
+
+      # The same static Linux program goes into every platform's app. Not
+      # --locked: a release run has just changed the version in Cargo.toml.
+      - name: Build hai-live
+        run: cargo build --release -p hai-live --target x86_64-unknown-linux-musl
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: rust-lld
 
       # Compiling and bundling are separate steps so that the Apple credentials
       # below are only ever in the environment of the bundler, never of npm or
       # cargo build scripts.
       - name: Build
         shell: bash
-        run: npm run tauri build -- --target "$BUILD_TARGET" --no-bundle
+        run: npm run tauri build -- --target "$BUILD_TARGET" --config "$LIVE_USB_CONFIG" --no-bundle
 
       - name: Verify universal macOS binary
         if: runner.os == 'macOS'
@@ -573,7 +682,7 @@ jobs:
       - name: Bundle
         if: env.SIGN_MACOS != 'true'
         shell: bash
-        run: npm run tauri bundle -- --target "$BUILD_TARGET"
+        run: npm run tauri bundle -- --target "$BUILD_TARGET" --config "$LIVE_USB_CONFIG"
         env:
           TAURI_SIGNING_PRIVATE_KEY: ""
 
@@ -615,7 +724,7 @@ jobs:
       # APPLE_SIGNING_IDENTITY, which catches an export of the wrong identity.
       - name: Bundle (signed)
         if: env.SIGN_MACOS == 'true'
-        run: npm run tauri bundle -- --target "$BUILD_TARGET"
+        run: npm run tauri bundle -- --target "$BUILD_TARGET" --config "$LIVE_USB_CONFIG"
         env:
           TAURI_SIGNING_PRIVATE_KEY: ""
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}

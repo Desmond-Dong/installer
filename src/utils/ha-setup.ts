@@ -8,6 +8,7 @@
 import { checkHaUpdated, getHaSetupStatus } from "../api/commands.js";
 import type { HaSetupProblem } from "../api/types.js";
 import { localize } from "../localization/localize.js";
+import { homeAssistantUrl } from "./external-url.js";
 import type { InstallerError } from "./installer-error.js";
 import { pollUntil, throwIfCancelled } from "./polling.js";
 
@@ -26,13 +27,21 @@ export interface HaSetupProgress {
   problem: HaSetupProblem | null;
 }
 
-/** What a problem Supervisor reports means for the install */
-export function haSetupProblemMessage(problem: HaSetupProblem): string {
+/** What Home Assistant OS runs on: a virtual machine, or a device of its own */
+export type HaosHost = "vm" | "device";
+
+/** What a problem Supervisor reports means for the install on `host` */
+export function haSetupProblemMessage(
+  problem: HaSetupProblem,
+  host: HaosHost = "vm"
+): string {
   switch (problem) {
     case "no_internet":
       return localize("utils.ha_setup.no_internet");
     case "free_space":
-      return localize("utils.ha_setup.free_space");
+      return host === "vm"
+        ? localize("utils.ha_setup.free_space")
+        : localize("utils.ha_setup.free_space_device");
     case "docker_ratelimit":
       return localize("utils.ha_setup.docker_ratelimit");
     case "update_failed":
@@ -48,10 +57,14 @@ export class HaSetupStalledError extends Error implements InstallerError {
 
   constructor(
     readonly problem: HaSetupProblem,
-    address: string
+    address: string,
+    host: HaosHost = "vm"
   ) {
     super(
-      `${haSetupProblemMessage(problem)} ${localize("utils.ha_setup.stalled", { address })}`
+      localize("utils.ha_setup.stalled", {
+        problem: haSetupProblemMessage(problem, host),
+        address,
+      })
     );
     this.name = "HaSetupStalledError";
     // A fixed category for diagnostics, one per problem
@@ -70,6 +83,8 @@ export interface HaSetupWaitOptions {
   timeoutMessage: string;
   /** Called with what to show, each time Supervisor reports. */
   onProgress: (progress: HaSetupProgress) => void;
+  /** What Home Assistant OS runs on, a VM unless given */
+  host?: HaosHost;
 }
 
 /**
@@ -85,7 +100,14 @@ export interface HaSetupWaitOptions {
  */
 export async function waitForHaSetup(
   ipAddress: string,
-  { interval, timeout, signal, timeoutMessage, onProgress }: HaSetupWaitOptions
+  {
+    interval,
+    timeout,
+    signal,
+    timeoutMessage,
+    onProgress,
+    host,
+  }: HaSetupWaitOptions
 ): Promise<void> {
   // The last problem reported, and since when
   let problem: HaSetupProblem | null = null;
@@ -139,7 +161,11 @@ export async function waitForHaSetup(
           !downloaded &&
           now - Math.max(problemSince, movedAt) >= HA_SETUP_STALL_MS
         ) {
-          throw new HaSetupStalledError(problem, `http://${ipAddress}`);
+          throw new HaSetupStalledError(
+            problem,
+            homeAssistantUrl(ipAddress),
+            host
+          );
         }
         return null;
       },

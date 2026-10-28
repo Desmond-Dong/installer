@@ -6,6 +6,9 @@ import type { WifiView } from "../../../../src/views/sbc/wifi-view.js";
 import { findByRole, fullA11ySnapshot } from "../../helpers/a11y.js";
 import { settle } from "../../tauri-ipc.js";
 
+/** The theme's error colour, in light mode like every unit test */
+const ERROR_COLOR = "rgb(179, 5, 50)";
+
 /** The view with the switch turned on, and its two fields. */
 async function mountOn() {
   wizardState.startFlow("sbc");
@@ -34,6 +37,16 @@ const hintOf = (input: WaInput) =>
   input.querySelector('[slot="hint"]')!.textContent!.trim();
 
 const invalid = (input: WaInput) => input.validity.customError;
+
+const enter = () =>
+  new KeyboardEvent("keydown", { key: "Enter", bubbles: true, composed: true });
+
+/** Count the Next requests the view sends to the wizard. */
+function countNext(el: WifiView) {
+  const counter = { next: 0 };
+  el.addEventListener("wizard-next", () => counter.next++);
+  return counter;
+}
 
 describe("wifi-view", () => {
   afterEach(() => wizardState.reset());
@@ -197,9 +210,64 @@ describe("wifi-view", () => {
     await ssid.updateComplete;
     const textbox = findByRole(await fullA11ySnapshot(), "textbox").find(
       (node) => node.name === "Network name"
-    ) as { description?: string } | undefined;
+    );
     expect(textbox?.description).to.equal(
       "Remove tabs and other invisible characters from the network name."
     );
+    expect(textbox?.invalid).to.equal("true");
+  });
+
+  it("marks a wrong field invalid to screen readers and shows it as an error", async () => {
+    const { ssid, password } = await mountOn();
+    const hint = password.querySelector<HTMLElement>('[slot="hint"]')!;
+    const icon = () => getComputedStyle(hint, "::before");
+    expect(ssid.input.getAttribute("aria-invalid")).to.equal("false");
+    expect(password.input.getAttribute("aria-invalid")).to.equal("false");
+    expect(getComputedStyle(hint).color).not.to.equal(ERROR_COLOR);
+    expect(icon().content).to.equal("none");
+
+    await type(password, "1234567");
+    await leave(password);
+    expect(hintOf(password)).to.equal("Use at least 8 characters.");
+    // The <input> screen readers read, not just the wa-input around it
+    expect(password.input.getAttribute("aria-invalid")).to.equal("true");
+    expect(ssid.input.getAttribute("aria-invalid")).to.equal("true");
+    // In the error colour and with an icon, not like the grey hint before it
+    expect(getComputedStyle(hint).color).to.equal(ERROR_COLOR);
+    expect(icon().content).to.equal('""');
+
+    await type(password, "12345678");
+    expect(password.input.getAttribute("aria-invalid")).to.equal("false");
+    expect(getComputedStyle(hint).color).not.to.equal(ERROR_COLOR);
+    expect(icon().content).to.equal("none");
+  });
+
+  it("asks for Next on Enter in a field, not on the switch or the password toggle", async () => {
+    const { el, toggle, ssid, password } = await mountOn();
+    const counter = countNext(el);
+
+    toggle.shadowRoot!.querySelector("input")!.dispatchEvent(enter());
+    password
+      .shadowRoot!.querySelector(".password-toggle")!
+      .dispatchEvent(enter());
+    expect(counter.next).to.equal(0);
+
+    ssid.input.dispatchEvent(enter());
+    password.input.dispatchEvent(enter());
+    expect(counter.next).to.equal(2);
+  });
+
+  it("says what holds Next back once Enter is pressed", async () => {
+    const { ssid, password } = await mountOn();
+    // Neither field was left, so nothing is wrong yet
+    await type(password, "1234567");
+    expect(hintOf(ssid)).to.equal("");
+    expect(invalid(password)).to.be.false;
+
+    password.input.dispatchEvent(enter());
+    await settle();
+    expect(hintOf(ssid)).to.equal("Enter the network name.");
+    expect(hintOf(password)).to.equal("Use at least 8 characters.");
+    expect(invalid(password)).to.be.true;
   });
 });

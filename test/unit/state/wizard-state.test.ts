@@ -1,9 +1,5 @@
 import { expect } from "@open-wc/testing";
-import { wizardState } from "../../../src/state/wizard-state.js";
-import {
-  findInstaller,
-  installerConfig,
-} from "../../../src/views/ha-hardware/hardware.js";
+import { MINIPC_STEPS, wizardState } from "../../../src/state/wizard-state.js";
 
 describe("wizard-state", () => {
   beforeEach(() => {
@@ -55,6 +51,28 @@ describe("wizard-state", () => {
     expect(state.steps[0].id).to.equal("method");
   });
 
+  it("swaps the mini PC steps without losing position or selections", () => {
+    wizardState.startFlow("minipc");
+    wizardState.setSelection("installMethod", "usb-boot");
+    wizardState.setSteps(MINIPC_STEPS.usb);
+    wizardState.nextStep();
+
+    wizardState.setSteps(MINIPC_STEPS.iso);
+    const state = wizardState.getState();
+    expect(state.currentStepIndex).to.equal(1);
+    expect(state.steps.map((step) => step.id)).to.deep.equal([
+      "method",
+      "media",
+      "location",
+      "confirm",
+      "flash",
+      "success",
+      "setup",
+      "done",
+    ]);
+    expect(state.selections.installMethod).to.equal("usb-boot");
+  });
+
   it("navigates to next step", () => {
     wizardState.startFlow("sbc");
     expect(wizardState.getState().currentStepIndex).to.equal(0);
@@ -71,20 +89,6 @@ describe("wizard-state", () => {
 
     wizardState.previousStep();
     expect(wizardState.getState().currentStepIndex).to.equal(1);
-  });
-
-  it("returns the x86 USB installer route past the architecture step it skipped", () => {
-    wizardState.startFlow("minipc");
-    const installer = findInstaller("x86-installer")!;
-    wizardState.setSelection("deviceConfig", installerConfig(installer));
-    const driveIndex = wizardState
-      .getState()
-      .steps.findIndex((step) => step.id === "drive");
-    wizardState.goToStep(driveIndex);
-    wizardState.previousStep();
-    expect(
-      wizardState.getState().steps[wizardState.getState().currentStepIndex]?.id
-    ).to.equal("method");
   });
 
   it("does not go before first step", () => {
@@ -150,6 +154,28 @@ describe("wizard-state", () => {
     expect(wizardState.currentStep?.id).to.equal("drive");
     wizardState.setSelection("deviceConfig", board("yellow-installer"));
     expect(ids()).not.to.include("wifi");
+  });
+
+  it("offers the compute module step only with the Yellow's modules", () => {
+    const ids = () => wizardState.getState().steps.map((step) => step.id);
+    const config = {
+      board: "yellow-installer",
+      minimum_storage_bytes: 1,
+      recommended_storage_bytes: 1,
+    };
+    wizardState.startFlow("ha-hardware");
+    expect(ids()).not.to.include("module");
+    wizardState.setSelection("yellowModules", [{ id: "yellow-cm4", config }]);
+    expect(ids().slice(0, 3)).to.deep.equal(["device", "module", "drive"]);
+    wizardState.setSelection("yellowModules", undefined);
+    expect(ids()).not.to.include("module");
+  });
+
+  it("keeps the steps when a selection leaves them as they were", () => {
+    wizardState.startFlow("sbc");
+    const { steps } = wizardState.getState();
+    wizardState.setSelection("drive", "/dev/sda");
+    expect(wizardState.getState().steps === steps).to.be.true;
   });
 
   it("sets selections", () => {
@@ -263,21 +289,6 @@ describe("wizard-state", () => {
     expect(state.currentFlow).to.be.null;
     expect(state.currentStepIndex).to.equal(0);
     expect(state.selections).to.deep.equal({});
-  });
-
-  it("calculates progress correctly", () => {
-    wizardState.startFlow("vm");
-    const stepCount = wizardState.getState().steps.length;
-    expect(wizardState.progress).to.be.closeTo(1 / stepCount, 0.01);
-
-    wizardState.nextStep();
-    expect(wizardState.progress).to.be.closeTo(2 / stepCount, 0.01);
-
-    // Advance to the final step
-    while (!wizardState.isLastStep) {
-      wizardState.nextStep();
-    }
-    expect(wizardState.progress).to.equal(1);
   });
 
   it("notifies subscribers on state change", () => {
