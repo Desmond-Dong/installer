@@ -2355,8 +2355,8 @@ mod tests {
         let url = server.url();
         let cache = Mutex::new(HashMap::new());
         let failed = server
-            .mock("HEAD", "/18.3/haos_rpi5-64-18.3.img.xz")
-            .with_status(500)
+            .mock("GET", "/tags/18.3")
+            .with_status(429)
             .expect(1)
             .create_async()
             .await;

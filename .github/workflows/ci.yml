@@ -62,7 +62,10 @@ jobs:
       # IDs with spaces.
       - name: Audit npm dependencies
         env:
-          ACCEPTED_ADVISORIES: ""
+          # GHSA-gcqx-w48m-w2h4 has no fixed deepmerge release. Only dev
+          # tooling (@web/dev-server, @rollup/plugin-node-resolve) needs it;
+          # nothing merged into the installed app ever goes through it.
+          ACCEPTED_ADVISORIES: "GHSA-gcqx-w48m-w2h4"
         run: |
           npm audit --package-lock-only --json > "$RUNNER_TEMP/audit.json" || true
           jq -nr --arg accepted "$ACCEPTED_ADVISORIES" '
