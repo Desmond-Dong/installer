@@ -2671,7 +2671,7 @@ mod mock_tests {
             let image = backend.downloaded.lock().unwrap().take().unwrap();
             assert_eq!(image.download_url, installer.download_url);
             assert_eq!(image.size, installer.size);
-            assert_eq!(image.digest.as_deref(), installer.digest);
+            assert_eq!(image.digest.as_deref(), Some(installer.digest));
             assert_eq!(image.format, ImageFormat::Raw);
         }
     }

@@ -87,11 +87,13 @@ export async function detectLanguage(
 
 export async function initializeLocalization(): Promise<void> {
   // [China mirror] A manual choice from the welcome select outranks the
-  // detected OS and browser locales.
+  // detected OS and browser locales. Detection reads the OS locale before
+  // anything else, so only pass it while the choice is still Automatic;
+  // otherwise the system language would win over the user's pick.
   const stored = readStoredLanguage();
   await detectLanguage(
     stored ? [stored, ...navigator.languages] : navigator.languages,
-    isTauri() ? locale : undefined
+    !stored && isTauri() ? locale : undefined
   );
   document.documentElement.lang = getLanguage();
   const tag = new Intl.Locale(getLanguage()) as Intl.Locale & {

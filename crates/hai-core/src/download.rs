@@ -474,7 +474,8 @@ async fn probe_mirror_image(
     // The mirror fronts missing files with redirects and blocks stray paths
     // with WAF responses; only a reachable file counts as present. Server
     // failures fail the whole release, keeping metadata trustworthy.
-    if status == reqwest::StatusCode::NOT_FOUND
+    if status.is_redirection()
+        || status == reqwest::StatusCode::NOT_FOUND
         || status == reqwest::StatusCode::GONE
         || status == reqwest::StatusCode::FORBIDDEN
     {
@@ -484,6 +485,22 @@ async fn probe_mirror_image(
         return Err(Error::DownloadFailed(format!(
             "The mirror returned HTTP {status} for {name}."
         )));
+    }
+    // The mirror answers a missing file with a redirect to its 404 page.
+    // A redirect that was followed, and one that was not, both leave the
+    // path that was asked for; a file the mirror carries answers in place.
+    if response.url().path() != format!("/{version}/{name}") {
+        return Ok(None);
+    }
+    // A page is never one of these images; only a binary counts as present,
+    // so an error page served with 200 cannot stand in for an asset.
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    if content_type.to_ascii_lowercase().contains("text/html") {
+        return Ok(None);
     }
     let size = response
         .headers()
@@ -2355,8 +2372,8 @@ mod tests {
         let url = server.url();
         let cache = Mutex::new(HashMap::new());
         let failed = server
-            .mock("HEAD", "/18.3/haos_rpi5-64-18.3.img.xz")
-            .with_status(500)
+            .mock("GET", "/tags/18.3")
+            .with_status(429)
             .expect(1)
             .create_async()
             .await;
@@ -2456,6 +2473,73 @@ mod tests {
             }
         }
         assert!(url.is_some());
+    }
+
+    #[tokio::test]
+    async fn mirror_missing_assets_are_absent_however_the_error_is_served() {
+        // [China mirror] A missing file comes back as a redirect to the
+        // mirror's 404 page, and that page can also arrive as HTML with a
+        // 200. Neither may be taken for an image.
+        let mut server = mockito::Server::new_async().await;
+        let client = shared_client().unwrap();
+
+        let error_page = server
+            .mock("HEAD", "/404.html")
+            .with_status(200)
+            .with_header("Content-Type", "text/html")
+            .with_header("Content-Length", "25413")
+            .create_async()
+            .await;
+        let location = format!("{}/404.html", server.url());
+        let redirect = server
+            .mock("HEAD", "/18.4/haos_ihost-18.4.img.xz")
+            .with_status(302)
+            .with_header("Location", &location)
+            .with_header("Content-Length", "145")
+            .create_async()
+            .await;
+        assert!(
+            probe_mirror_image(client, &server.url(), "18.4", "ihost", ImageFormat::Raw)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        redirect.assert_async().await;
+        error_page.assert_async().await;
+
+        let page = server
+            .mock("HEAD", "/18.4/haos_other-18.4.qcow2.xz")
+            .with_status(200)
+            .with_header("Content-Type", "text/html")
+            .with_header("Content-Length", "25413")
+            .create_async()
+            .await;
+        assert!(
+            probe_mirror_image(client, &server.url(), "18.4", "other", ImageFormat::Qcow2)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        page.assert_async().await;
+
+        let real = server
+            .mock("HEAD", "/18.4/haos_other-18.4.img.xz")
+            .with_status(200)
+            .with_header("Content-Type", "application/octet-stream")
+            .with_header("Content-Length", "576777368")
+            .create_async()
+            .await;
+        let image = probe_mirror_image(client, &server.url(), "18.4", "other", ImageFormat::Raw)
+            .await
+            .unwrap()
+            .expect("a binary asset is present");
+        assert_eq!(image.size, 576_777_368);
+        assert_eq!(
+            image.download_url,
+            format!("{}/18.4/haos_other-18.4.img.xz", server.url())
+        );
+        assert_eq!(image.digest, None);
+        real.assert_async().await;
     }
 
     #[test]

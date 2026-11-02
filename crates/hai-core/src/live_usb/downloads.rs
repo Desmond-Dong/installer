@@ -104,13 +104,13 @@ pub async fn fetch_haos<B: ReleaseSource, P: ProgressCallback>(
         .join(format!("haos_{HAOS_BOARD}-{version}.img.xz"));
     let sha256 = match referenced {
         Some(sha256) => {
-            let _ = fetch(backend, image, &path, Some(&sha256), progress).await?;
+            fetch(backend, image, &path, Some(&sha256), progress).await?;
             sha256
         }
         // No digest to compare against; download, then hash what was kept so
         // the cache marker and the `.sha256` on the stick still match it.
         None => {
-            let _ = fetch(backend, image, &path, None, progress).await?;
+            fetch(backend, image, &path, None, progress).await?;
             sha256_with_progress(&path, image.size, progress).await?
         }
     };

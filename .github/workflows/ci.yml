@@ -62,7 +62,21 @@ jobs:
       # IDs with spaces.
       - name: Audit npm dependencies
         env:
-          ACCEPTED_ADVISORIES: ""
+          # GHSA-gcqx-w48m-w2h4 has no fixed deepmerge release. Only dev
+          # tooling (@web/dev-server, @rollup/plugin-node-resolve) needs it;
+          # nothing merged into the installed app ever goes through it.
+          #
+          # GHSA-3g3m-2fjr-6pw4 (glob) and GHSA-g3hv-75wg-m249 (minimatch)
+          # do have patched releases, glob 14 and minimatch 11, but no
+          # released parent takes them yet: eslint 10.14, @eslint/config-array
+          # 0.23 and @typescript-eslint 8.72 still ask for minimatch ^10.2,
+          # and @actions/artifact 6.3 (archiver ^7) for glob ^10. Forcing the
+          # majors from here would rewrite the lock file, break those tools,
+          # and fight every later dependency update. They live in lint and
+          # release tooling only, and every pattern they match is a literal
+          # of ours, so no untrusted input reaches them. Drop each ID once a
+          # parent ships the patched version.
+          ACCEPTED_ADVISORIES: "GHSA-gcqx-w48m-w2h4 GHSA-3g3m-2fjr-6pw4 GHSA-g3hv-75wg-m249"
         run: |
           npm audit --package-lock-only --json > "$RUNNER_TEMP/audit.json" || true
           jq -nr --arg accepted "$ACCEPTED_ADVISORIES" '
