@@ -195,13 +195,12 @@ export abstract class VmProgressView<
           id,
           label:
             id === "updating"
-              ? localize("common.vm.installing_latest_home_assistant")
+              ? localize("common.install.installing_home_assistant")
               : this._getStageDescription(id),
         }))}
         .stage=${stage}
-        .stageTitle=${this._stopping
-          ? localize("common.install.stopping")
-          : this._getStageTitle(stage)}
+        .stageTitle=${this._getStageTitle(stage)}
+        .stopping=${this._stopping}
         .description=${this._getStageDescription(stage)}
         .progress=${this._progress}
         .bytesProcessed=${this._bytesProcessed}

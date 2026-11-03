@@ -133,23 +133,30 @@ test("waits for the device the drive starts until Home Assistant is ready", asyn
   const setup = page.locator("device-setup-view");
   await expect(setup).toBeVisible();
   await expect(next(page)).toHaveText("Skip");
+  // The last part, whose heading is the current row of the list it opens
+  const parts = setup.getByRole("button", { name: /^part 2 of 2$/i });
+  await parts.click({ timeout: 20000 });
   await expect(
     setup
       .getByRole("list", { name: "Installation stages" })
       .locator('[aria-current="step"]')
-  ).toContainText("Installing latest Home Assistant", { timeout: 20000 });
+  ).toContainText("Installing Home Assistant", { timeout: 20000 });
   await expect(setup.getByRole("progressbar")).toBeVisible();
-  await expect(setup).toContainText(
-    "Checking Home Assistant at http://192.168.1.101"
-  );
+  // Estimated from how fast the landing page reports the download going
+  await expect(setup.locator(".eta")).toContainText("remaining", {
+    timeout: 10000,
+  });
+  // Found, so the address is the installer's business
+  await expect(setup).not.toContainText("192.168.1.101");
 
-  // Once it's ready, the last step links to it
+  // Once it's ready, the last step opens it
   const done = page.locator("device-done-view");
   await expect(done).toContainText("Home Assistant is ready on your device", {
     timeout: 30000,
   });
   await expect(
-    done.getByRole("link", { name: "http://192.168.1.101" })
+    done.getByRole("link", { name: "Open Home Assistant" })
   ).toHaveAttribute("href", "http://192.168.1.101");
+  await expect(done.getByRole("list", { name: "Next steps" })).toBeHidden();
   await expect(next(page)).toHaveText("Done");
 });

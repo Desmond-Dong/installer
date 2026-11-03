@@ -14,10 +14,14 @@ use crate::{FlashProgress, FlashStage, HaosImage, ImageFormat, ProgressCallback,
 /// Pinned Alpine release. Bumping it means updating the name, URL, checksum and size below.
 pub const ALPINE_VERSION: &str = "3.24.2";
 const ALPINE_ISO_NAME: &str = "alpine-standard-3.24.2-x86_64.iso";
-// [China mirror] dl-cdn.alpinelinux.org is slow from China; this pinned file
-// sits under the same path on the USTC Alpine mirror.
-const ALPINE_ISO_URL: &str =
-    "https://mirrors.ustc.edu.cn/alpine/v3.24/releases/x86_64/alpine-standard-3.24.2-x86_64.iso";
+// [China mirror] The same pinned file, in the order we try it: China's
+// mirrors first, the project's own CDN last. Whichever answers must match the
+// checksum below, so a slow or blocked source only costs a retry.
+const ALPINE_ISO_URLS: [&str; 3] = [
+    "https://mirrors.ustc.edu.cn/alpine/v3.24/releases/x86_64/alpine-standard-3.24.2-x86_64.iso",
+    "https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.24/releases/x86_64/alpine-standard-3.24.2-x86_64.iso",
+    "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/x86_64/alpine-standard-3.24.2-x86_64.iso",
+];
 /// From Alpine's published `.sha256` file for this ISO.
 const ALPINE_ISO_SHA256: &str = "20c026e3a788bfb75fc8b50a54bcc12aee85e3c75909740bba6a6f4563d63296";
 const ALPINE_ISO_SIZE: u64 = 370_147_328;
@@ -53,16 +57,32 @@ pub async fn fetch_alpine<B: ReleaseSource, P: ProgressCallback>(
     cache: &Path,
     progress: &P,
 ) -> Result<Download> {
-    // hai-core's downloader takes a HaosImage; it's only used here as "URL + size + digest".
-    let image = HaosImage {
-        board: "alpine".into(),
-        format: ImageFormat::Raw,
-        download_url: ALPINE_ISO_URL.into(),
-        size: ALPINE_ISO_SIZE,
-        digest: Some(format!("sha256:{ALPINE_ISO_SHA256}")),
-    };
     let path = cache.join("alpine").join(ALPINE_ISO_NAME);
-    fetch(backend, &image, &path, Some(ALPINE_ISO_SHA256), progress).await?;
+    // [China mirror] A source that is down must not end the flow; the next one
+    // carries the same file. Every attempt is verified, so none can slip a
+    // wrong file in. A cancelled run still stops at the first failure.
+    let mut last_failure = None;
+    for url in ALPINE_ISO_URLS {
+        // hai-core's downloader takes a HaosImage; it's only used here as "URL + size + digest".
+        let image = HaosImage {
+            board: "alpine".into(),
+            format: ImageFormat::Raw,
+            download_url: url.into(),
+            size: ALPINE_ISO_SIZE,
+            digest: Some(format!("sha256:{ALPINE_ISO_SHA256}")),
+        };
+        match fetch(backend, &image, &path, Some(ALPINE_ISO_SHA256), progress).await {
+            Ok(()) => {
+                last_failure = None;
+                break;
+            }
+            Err(error) if progress.is_cancelled() => return Err(error),
+            Err(error) => last_failure = Some(error),
+        }
+    }
+    if let Some(error) = last_failure {
+        return Err(error);
+    }
     Ok(Download {
         path,
         version: ALPINE_VERSION.into(),
@@ -210,6 +230,97 @@ mod tests {
     use std::sync::Mutex;
 
     const HELLO_SHA256: &str = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
+
+    /// [China mirror] Stands in for the network: records the source each
+    /// download comes from, and refuses the first one like a mirror that is
+    /// down while the rest serve the pinned file.
+    #[derive(Default)]
+    struct Sources {
+        tried: Mutex<Vec<String>>,
+        failures: usize,
+    }
+
+    impl ReleaseSource for Sources {
+        async fn check_connection(&self) -> Result<()> {
+            unreachable!()
+        }
+        async fn get_device_manifest(&self) -> Result<crate::DeviceManifest> {
+            unreachable!()
+        }
+        async fn get_haos_release(&self, _: &str) -> Result<crate::HaosRelease> {
+            unreachable!()
+        }
+        async fn get_latest_haos_release_for_board(&self, _: &str) -> Result<crate::HaosRelease> {
+            unreachable!()
+        }
+        async fn download_image<P: ProgressCallback>(
+            &self,
+            image: &HaosImage,
+            dest_path: &Path,
+            _: &P,
+        ) -> Result<()> {
+            let mut tried = self.tried.lock().unwrap();
+            tried.push(image.download_url.clone());
+            if tried.len() <= self.failures {
+                return Err(crate::Error::DownloadFailed("the mirror is down".into()));
+            }
+            std::fs::write(dest_path, b"alpine")?;
+            Ok(())
+        }
+        async fn extract_xz<P: ProgressCallback>(&self, _: &Path, _: &Path, _: &P) -> Result<()> {
+            unreachable!()
+        }
+        fn cache_dir(&self) -> Result<PathBuf> {
+            unreachable!()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_source_that_is_down_is_replaced_by_the_next_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Sources {
+            failures: 1,
+            ..Sources::default()
+        };
+        fetch_alpine(&backend, dir.path(), &NoOpProgress)
+            .await
+            .unwrap();
+        assert_eq!(
+            *backend.tried.lock().unwrap(),
+            ALPINE_ISO_URLS[..2].to_vec(),
+            "the first source is retried on the second"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_source_failing_reports_the_last_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Sources {
+            failures: ALPINE_ISO_URLS.len(),
+            ..Sources::default()
+        };
+        assert!(fetch_alpine(&backend, dir.path(), &NoOpProgress)
+            .await
+            .is_err());
+        assert_eq!(backend.tried.lock().unwrap().len(), ALPINE_ISO_URLS.len());
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_run_does_not_ask_another_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Sources {
+            failures: usize::MAX,
+            ..Sources::default()
+        };
+        assert!(fetch_alpine(&backend, dir.path(), &Cancelled)
+            .await
+            .is_err());
+        assert_eq!(
+            backend.tried.lock().unwrap().len(),
+            1,
+            "a stop ends the flow instead of moving to the next mirror"
+        );
+    }
 
     #[tokio::test]
     async fn cached_file_with_matching_size_and_hash_is_reused() {

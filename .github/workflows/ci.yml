@@ -60,23 +60,12 @@ jobs:
       # on every advisory that isn't accepted below. Only accept one that has
       # no fixed release yet, and say here why it can't hurt us. Separate the
       # IDs with spaces.
+      #
+      # GHSA-gcqx-w48m-w2h4 (deepmerge): only the test runner's dev server
+      # uses it, to merge its defaults with our own test config. No fix coming soon as maintainer declined it
       - name: Audit npm dependencies
         env:
-          # GHSA-gcqx-w48m-w2h4 has no fixed deepmerge release. Only dev
-          # tooling (@web/dev-server, @rollup/plugin-node-resolve) needs it;
-          # nothing merged into the installed app ever goes through it.
-          #
-          # GHSA-3g3m-2fjr-6pw4 (glob) and GHSA-g3hv-75wg-m249 (minimatch)
-          # do have patched releases, glob 14 and minimatch 11, but no
-          # released parent takes them yet: eslint 10.14, @eslint/config-array
-          # 0.23 and @typescript-eslint 8.72 still ask for minimatch ^10.2,
-          # and @actions/artifact 6.3 (archiver ^7) for glob ^10. Forcing the
-          # majors from here would rewrite the lock file, break those tools,
-          # and fight every later dependency update. They live in lint and
-          # release tooling only, and every pattern they match is a literal
-          # of ours, so no untrusted input reaches them. Drop each ID once a
-          # parent ships the patched version.
-          ACCEPTED_ADVISORIES: "GHSA-gcqx-w48m-w2h4 GHSA-3g3m-2fjr-6pw4 GHSA-g3hv-75wg-m249"
+          ACCEPTED_ADVISORIES: "GHSA-gcqx-w48m-w2h4"
         run: |
           npm audit --package-lock-only --json > "$RUNNER_TEMP/audit.json" || true
           jq -nr --arg accepted "$ACCEPTED_ADVISORIES" '
@@ -120,7 +109,7 @@ jobs:
 
       - name: Install cargo-audit
         if: steps.lock.outputs.audit == 'true'
-        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
         with:
           tool: cargo-audit@0.22.2
 
@@ -236,6 +225,9 @@ jobs:
       - name: Run ESLint
         run: npm run lint
 
+      - name: Check Lit templates
+        run: npm run lint:lit
+
       - name: Check localization catalog and placeholders
         run: |
           npm run localization:check
@@ -280,7 +272,7 @@ jobs:
 
       - name: Install cargo-shear
         if: runner.os == 'Linux'
-        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
         with:
           tool: cargo-shear
 
@@ -480,7 +472,7 @@ jobs:
 
       - name: Install cargo-llvm-cov
         if: runner.os == 'Linux'
-        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
         with:
           tool: cargo-llvm-cov
 

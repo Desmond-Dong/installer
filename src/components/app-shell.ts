@@ -7,35 +7,6 @@ import "../views/welcome-view.js";
 import "../views/connection-check-view.js";
 import "../views/path-selection-view.js";
 import "../views/other-options-view.js";
-import "../views/sbc/device-selection-view.js";
-import "../views/sbc/drive-selection-view.js";
-import "../views/sbc/confirmation-view.js";
-import "../views/sbc/wifi-view.js";
-import "../views/sbc/progress-view.js";
-import "../views/sbc/success-view.js";
-import "../views/ha-hardware/device-selection-view.js";
-import "../views/ha-hardware/module-selection-view.js";
-import "../views/ha-hardware/success-view.js";
-import "../views/minipc/setup-method-view.js";
-import "../views/minipc/architecture-selection-view.js";
-import "../views/minipc/media-view.js";
-import "../views/live-usb/live-usb-gate.js";
-import "../views/live-usb/live-iso-location-view.js";
-import "../views/live-usb/live-usb-summary-view.js";
-import "../views/live-usb/live-usb-progress-view.js";
-import "../views/live-usb/live-usb-success-view.js";
-import "../views/device-setup-view.js";
-import "../views/device-done-view.js";
-import "../views/utm/utm-check-view.js";
-import "../views/utm/utm-configure-view.js";
-import "../views/utm/utm-confirm-view.js";
-import "../views/utm/utm-progress-view.js";
-import "../views/utm/utm-success-view.js";
-import "../views/proxmox/proxmox-connect-view.js";
-import "../views/proxmox/proxmox-configure-view.js";
-import "../views/proxmox/proxmox-confirm-view.js";
-import "../views/proxmox/proxmox-progress-view.js";
-import "../views/proxmox/proxmox-success-view.js";
 import { enabledImportStorageList } from "../views/proxmox/proxmox-success-view.js";
 
 // Import components
@@ -161,13 +132,8 @@ export class AppShell extends LitElement {
   private _stopCloseListener?: Promise<() => void>;
   private _pendingFlow?: WizardFlow;
 
-  /** The screen the latest single click landed on. */
-  private _clickedScreen?: string;
-
   connectedCallback() {
     super.connectedCallback();
-    // Capturing, so it runs before the controls on the screen
-    this.addEventListener("click", this._onClick, true);
     // The backend holds back closing the app while an installation runs
     this._stopCloseListener = onCloseBlocked(() => {
       // One question at a time: quitting is the bigger one
@@ -182,7 +148,6 @@ export class AppShell extends LitElement {
 
   disconnectedCallback() {
     super.disconnectedCallback();
-    this.removeEventListener("click", this._onClick, true);
     void this._stopCloseListener?.then((stop) => stop());
   }
 
@@ -400,28 +365,6 @@ export class AppShell extends LitElement {
     return (this._wizardShell?.firstElementChild ??
       null) as WizardStepView | null;
   }
-
-  /** What is on screen: the view, and in the wizard, its step. */
-  private get _screen(): string {
-    return this._currentView === "wizard"
-      ? `wizard/${wizardState.currentStep?.id}`
-      : this._currentView;
-  }
-
-  // A click that changes the screen does so before the second click of a
-  // double-click arrives, so that one would act on whatever the next screen
-  // has in the same spot: Back on the first step and then Back on the path
-  // selection went all the way to the welcome screen, and Next on a
-  // configured VM went past its confirmation into the install. `detail`
-  // counts the clicks; keyboard activation reports 0.
-  private _onClick = (event: MouseEvent) => {
-    if (event.detail < 2) {
-      this._clickedScreen = this._screen;
-    } else if (this._screen !== this._clickedScreen) {
-      event.preventDefault();
-      event.stopPropagation();
-    }
-  };
 
   private _onNavigate(e: HAIEvent<"navigate">) {
     this._currentView = e.detail.view;

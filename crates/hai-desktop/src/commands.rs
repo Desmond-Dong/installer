@@ -287,15 +287,14 @@ where
             // Find the raw disk image for the requested board. Some boards also
             // ship a qcow2 under the same board name, which must never be
             // written to a drive.
-            let image = release
+            release
                 .image_for(&request.board, ImageFormat::Raw)
                 .cloned()
                 .ok_or_else(|| {
                     hai_core::Error::InvalidConfig(
                         "No compatible image was found for this device.".into(),
                     )
-                })?;
-            image
+                })?
         }
     };
 
@@ -427,6 +426,14 @@ pub async fn get_manifest() -> Result<DeviceManifest, CommandError> {
 #[tauri::command]
 pub fn get_system_info() -> Result<SystemInfo, CommandError> {
     Backend.system_info().map_err(CommandError::from)
+}
+
+/// The language HAI_LANGUAGE asks for, like `de` or `pt-BR`, in place of the OS's
+#[tauri::command]
+pub fn language_override() -> Option<String> {
+    std::env::var("HAI_LANGUAGE")
+        .ok()
+        .filter(|tag| !tag.is_empty())
 }
 
 // =============================================================================
