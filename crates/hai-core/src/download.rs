@@ -2718,9 +2718,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(parsed.images.len(), 1);
+        // [China mirror] The release's names come with the mirror's location
         assert_eq!(
             parsed.images[0].download_url,
-            "https://github.com/home-assistant/operating-system/releases/download/14.2/haos_rpi5-64-14.2.img.xz"
+            format!("{OTA_MIRROR}/14.2/haos_rpi5-64-14.2.img.xz")
         );
 
         for url in [
