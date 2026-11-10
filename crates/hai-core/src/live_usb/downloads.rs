@@ -237,6 +237,17 @@ mod tests {
     struct Sources {
         tried: Mutex<Vec<String>>,
         failures: usize,
+        /// Where these downloads live, so making room only looks here.
+        cache: PathBuf,
+    }
+
+    /// A fake whose first `failures` downloads are refused, in `dir`.
+    fn sources(dir: &Path, failures: usize) -> Sources {
+        Sources {
+            failures,
+            cache: dir.to_path_buf(),
+            ..Sources::default()
+        }
     }
 
     impl ReleaseSource for Sources {
@@ -270,17 +281,14 @@ mod tests {
             unreachable!()
         }
         fn cache_dir(&self) -> Result<PathBuf> {
-            unreachable!()
+            Ok(self.cache.clone())
         }
     }
 
     #[tokio::test]
     async fn a_source_that_is_down_is_replaced_by_the_next_one() {
         let dir = tempfile::tempdir().unwrap();
-        let backend = Sources {
-            failures: 1,
-            ..Sources::default()
-        };
+        let backend = sources(dir.path(), 1);
         fetch_alpine(&backend, dir.path(), &NoOpProgress)
             .await
             .unwrap();
@@ -294,10 +302,7 @@ mod tests {
     #[tokio::test]
     async fn every_source_failing_reports_the_last_failure() {
         let dir = tempfile::tempdir().unwrap();
-        let backend = Sources {
-            failures: ALPINE_ISO_URLS.len(),
-            ..Sources::default()
-        };
+        let backend = sources(dir.path(), ALPINE_ISO_URLS.len());
         assert!(fetch_alpine(&backend, dir.path(), &NoOpProgress)
             .await
             .is_err());
@@ -307,10 +312,7 @@ mod tests {
     #[tokio::test]
     async fn a_cancelled_run_does_not_ask_another_source() {
         let dir = tempfile::tempdir().unwrap();
-        let backend = Sources {
-            failures: usize::MAX,
-            ..Sources::default()
-        };
+        let backend = sources(dir.path(), usize::MAX);
         assert!(fetch_alpine(&backend, dir.path(), &Cancelled)
             .await
             .is_err());

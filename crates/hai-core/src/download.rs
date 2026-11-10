@@ -1890,7 +1890,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn download_rejects_missing_or_invalid_digest_before_touching_destination() {
+    // [China mirror] A missing digest is allowed on this branch, so only the
+    // unusable ones are here; `download_allows_images_without_a_digest_...`
+    // covers the missing case.
+    async fn download_rejects_invalid_digest_before_touching_destination() {
         let mut server = mockito::Server::new_async().await;
         let request = server
             .mock("GET", "/image.xz")
@@ -1901,7 +1904,6 @@ mod tests {
         let destination = directory.path().join("image.xz");
         std::fs::write(&destination, b"existing image").unwrap();
         for digest in [
-            None,
             Some("".into()),
             Some("sha256:".into()),
             Some(format!("sha512:{}", "a".repeat(64))),
