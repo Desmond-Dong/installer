@@ -674,7 +674,6 @@
   "backend.download.not_enough_space": "本机剩余空间不足以存放镜像：需要 {needed_mb, number, ::unit/megabyte}，仅剩 {free_mb, number, ::unit/megabyte}。请清理空间后重试。",
   "views.sbc.drive_selection_view.no_usable_drive_minimum": "{count, plural, other {这些硬盘都不可使用。}}至少需要 {size} 的硬盘。请接入硬盘并选择「刷新」。",
   "views.sbc.drive_selection_view.no_usable_drive_unavailable": "{count, plural, other {这些硬盘都不可使用，因为它们的容量或开发板的要求不可用。}}",
-  "backend.download.mirror_unreachable": "无法访问 ota.hasscn.top。请检查互联网连接后重试。",
   "components.install_progress.part_of": "阶段 {current, number}/{total, number}",
   "components.install_progress.stopping": "正在停止…",
   "common.device.home_assistant": "Home Assistant",

@@ -318,6 +318,7 @@ mod tests {
             name,
             size: 1,
             browser_download_url: "https://example.test/image.img.xz".into(),
+            digest: None,
         }
     }
 
@@ -424,9 +425,12 @@ mod tests {
                 .await
                 .expect("Invalid GitHub release metadata");
             assert_eq!(release.tag_name, version);
+            // [China mirror] The catalog check reads upstream's own releases,
+            // whose checksums are signed; this branch's builds carry theirs in
+            // the release metadata instead.
             let sums = crate::download::sha256sums::verified(
                 &client,
-                crate::download::HAOS_DOWNLOADS,
+                "https://github.com/home-assistant/operating-system/releases/download",
                 &version,
             )
             .await

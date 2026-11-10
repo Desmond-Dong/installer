@@ -18,6 +18,9 @@ use std::sync::LazyLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 
+// [China mirror] This branch's releases carry each asset's SHA-256 in the
+// release metadata, so the signed checksum file is only read by tests.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod sha256sums;
 
 /// The extracted image of `source`, in the cache folder under its release's
@@ -237,17 +240,14 @@ const VERSION_URL: &str = "https://version.hasscn.top/stable.json";
 /// `{version}/{asset_name}`, mirroring the names of the official release.
 const OTA_MIRROR: &str = "https://ota.hasscn.top";
 
-/// GitHub API URL for HAOS releases.
-///
-/// [China mirror] Kept for reference and tests; release metadata on this
-/// branch comes from the mirror instead of the GitHub API.
-#[allow(dead_code)]
-const HAOS_RELEASES_API: &str =
-    "https://api.github.com/repos/home-assistant/operating-system/releases";
+/// [China mirror] This branch's Home Assistant OS builds, whose releases list
+/// the images to install and each one's SHA-256.
+const HAOS_RELEASES_API: &str = "https://api.github.com/repos/ha-china/HAOS-CN/releases";
 
-/// Images are only ever downloaded from the official HAOS repository.
-pub(crate) const HAOS_DOWNLOADS: &str =
-    "https://github.com/home-assistant/operating-system/releases/download";
+/// [China mirror] Where the release metadata says its assets live, for the
+/// check below; the download itself goes to the mirror, see
+/// [`parse_github_release`].
+pub(crate) const HAOS_DOWNLOADS: &str = "https://github.com/ha-china/HAOS-CN/releases/download";
 
 /// User agent for API requests
 const USER_AGENT: &str = concat!("HomeAssistantInstaller/", env!("CARGO_PKG_VERSION"));
@@ -302,10 +302,6 @@ fn github_invalid() -> crate::Message {
     crate::message!("backend.download.github_invalid_response")
 }
 
-/// [China mirror] The mirror has no GitHub API to answer why it is down.
-fn mirror_unreachable() -> crate::Message {
-    crate::message!("backend.download.mirror_unreachable")
-}
 static RELEASE_CACHE: LazyLock<Mutex<HashMap<String, HaosRelease>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -435,138 +431,6 @@ async fn fetch_latest_release() -> Result<HaosRelease> {
     fetch_release(&version).await
 }
 
-/// [China mirror] One asset lookup on the mirror: a HEAD request decides
-/// whether the mirror carries `{version}/haos_{board}-{version}{suffix}` and
-/// how large it is. A missing asset is not an error, like an asset missing
-/// from an upstream release; a network failure is, so an unreachable mirror
-/// does not look like an empty release.
-async fn probe_mirror_image(
-    client: &reqwest::Client,
-    base_url: &str,
-    version: &str,
-    board: &str,
-    format: ImageFormat,
-) -> Result<Option<HaosImage>> {
-    let suffix = match format {
-        ImageFormat::Raw => ".img.xz",
-        ImageFormat::Qcow2 => ".qcow2.xz",
-    };
-    let name = format!("haos_{board}-{version}{suffix}");
-    let url = format!("{base_url}/{version}/{name}");
-    let response = client
-        .head(&url)
-        .timeout(METADATA_TIMEOUT)
-        .send()
-        .await
-        .map_err(|error| metadata_request_error(error, mirror_unreachable))?;
-    let status = response.status();
-    // The mirror fronts missing files with redirects and blocks stray paths
-    // with WAF responses; only a reachable file counts as present. Server
-    // failures fail the whole release, keeping metadata trustworthy.
-    if status.is_redirection()
-        || status == reqwest::StatusCode::NOT_FOUND
-        || status == reqwest::StatusCode::GONE
-        || status == reqwest::StatusCode::FORBIDDEN
-    {
-        return Ok(None);
-    }
-    if !status.is_success() {
-        return Err(Error::DownloadFailed(format!(
-            "The mirror returned HTTP {status} for {name}."
-        )));
-    }
-    // The mirror answers a missing file with a redirect to its 404 page.
-    // A redirect that was followed, and one that was not, both leave the
-    // path that was asked for; a file the mirror carries answers in place.
-    if response.url().path() != format!("/{version}/{name}") {
-        return Ok(None);
-    }
-    // A page is never one of these images; only a binary counts as present,
-    // so an error page served with 200 cannot stand in for an asset.
-    let content_type = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default();
-    if content_type.to_ascii_lowercase().contains("text/html") {
-        return Ok(None);
-    }
-    let size = response
-        .headers()
-        .get(reqwest::header::CONTENT_LENGTH)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse().ok())
-        .ok_or_else(|| {
-            Error::DownloadFailed(format!("The mirror did not report a size for {name}"))
-        })?;
-    Ok(Some(HaosImage {
-        board: board.to_string(),
-        format,
-        download_url: url,
-        size,
-        digest: None,
-    }))
-}
-
-/// [China mirror] Build release metadata without a release API. The mirror
-/// serves plain files under `{version}/{asset_name}`, so the bundled boards
-/// decide the file list and a HEAD probe per candidate asset supplies the
-/// size. The mirror replaces rather than mirrors the official files, so no
-/// SHA-256 digest is attached; downloads then rely on HTTPS and the XZ
-/// integrity checks during extraction.
-async fn fetch_release_from_mirror(base_url: &str, version: &str) -> Result<HaosRelease> {
-    // stable.json and the frontend supply the version; anything but a plain
-    // version number could steer the URL to another repository.
-    if parse_version(version).is_none() {
-        return Err(Error::DownloadFailed(format!(
-            "Invalid Home Assistant OS version: {version}"
-        )));
-    }
-    let client = shared_client()?;
-    let manifest = crate::manifest::bundled_manifest();
-    let probes: Vec<_> = manifest
-        .devices
-        .iter()
-        .flat_map(|device| {
-            let board = device.haos.board.as_str();
-            [
-                probe_mirror_image(client, base_url, version, board, ImageFormat::Raw),
-                probe_mirror_image(client, base_url, version, board, ImageFormat::Qcow2),
-            ]
-        })
-        .collect();
-    let results = futures_util::future::join_all(probes).await;
-    if results.iter().all(|result| result.is_err()) {
-        return Err(Error::ServiceUnavailable(mirror_unreachable()));
-    }
-    Ok(HaosRelease {
-        version: version.to_string(),
-        images: results
-            .into_iter()
-            .filter_map(|result| result.ok().flatten())
-            .collect(),
-    })
-}
-
-/// [China mirror] Cached release metadata from the mirror. The mirror has no
-/// release API, so building metadata HEAD-probes each bundled asset.
-async fn fetch_cached_release_from_mirror(
-    cache: &Mutex<HashMap<String, HaosRelease>>,
-    downloads_url: &str,
-    version: &str,
-) -> Result<HaosRelease> {
-    // Serialize misses so concurrent installations do not spend multiple requests.
-    let mut cache = cache.lock().await;
-    if let Some(release) = cache.get(version) {
-        return Ok(release.clone());
-    }
-    let release = fetch_release_from_mirror(downloads_url, version).await?;
-    cache.insert(version.to_string(), release.clone());
-    Ok(release)
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-/// [China mirror] unused on this branch; kept for upstream sync and tests.
 /// Fetch a specific HAOS release by version (internal version with custom base URL)
 async fn fetch_release_from_api(api_base_url: &str, version: &str) -> Result<HaosRelease> {
     // stable.json and the frontend supply the version; anything but a plain
@@ -644,14 +508,14 @@ fn rate_limit_wait(headers: &reqwest::header::HeaderMap, now: u64) -> u64 {
     retry_after.max(reset).max(60)
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
-/// [China mirror] unused on this branch; kept for upstream sync and tests.
 /// The release with each image's digest from its verified `SHA256SUMS`,
 /// whose files are at `<downloads_url>/<version>/<file>`.
 async fn fetch_cached_release(
     cache: &Mutex<HashMap<String, HaosRelease>>,
     api_base_url: &str,
-    downloads_url: &str,
+    // [China mirror] Unused here: these releases carry each asset's SHA-256 in
+    // the metadata itself, so no signed checksum file is fetched.
+    _downloads_url: &str,
     version: &str,
 ) -> Result<HaosRelease> {
     // Serialize misses so concurrent installations do not spend multiple API requests.
@@ -659,22 +523,14 @@ async fn fetch_cached_release(
     if let Some(release) = cache.get(version) {
         return Ok(release.clone());
     }
-    let mut release = fetch_release_from_api(api_base_url, version).await?;
-    let sums = sha256sums::verified(shared_client()?, downloads_url, version).await?;
-    for image in &mut release.images {
-        // Without a digest, the download is refused
-        let name = image.download_url.rsplit('/').next();
-        image.digest = name.and_then(|name| sums.get(name)).cloned();
-    }
+    let release = fetch_release_from_api(api_base_url, version).await?;
     cache.insert(version.to_string(), release.clone());
     Ok(release)
 }
 
 /// Fetch a specific HAOS release by version
 async fn fetch_release(version: &str) -> Result<HaosRelease> {
-    // [China mirror] Release metadata comes from the mirror, not the GitHub
-    // API; downloads then also point at the mirror instead of GitHub.
-    fetch_cached_release_from_mirror(&RELEASE_CACHE, OTA_MIRROR, version).await
+    fetch_cached_release(&RELEASE_CACHE, HAOS_RELEASES_API, HAOS_DOWNLOADS, version).await
 }
 
 /// Fetch HAOS release info for a specific version (or "latest")
@@ -727,9 +583,12 @@ fn parse_github_release(release: GitHubRelease, version: &str) -> Result<HaosRel
         images.push(HaosImage {
             board,
             format,
-            download_url: asset.browser_download_url,
+            // [China mirror] The file itself comes from the mirror, which
+            // serves the release under the names it lists, while the SHA-256
+            // is the one the release publishes for it.
+            download_url: format!("{OTA_MIRROR}/{version}/{}", asset.name),
             size: asset.size,
-            digest: None,
+            digest: asset.digest.clone(),
         });
     }
 
@@ -2013,18 +1872,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn release_digests_come_from_the_verified_sums_and_control_download() {
+    async fn release_digests_come_from_the_release_metadata_and_control_download() {
         let data = b"what GitHub's metadata vouches for";
         let mut server = mockito::Server::new_async().await;
         let image = image_for_data(
             &format!("{HAOS_DOWNLOADS}/18.5/haos_rpi5-64-18.5.img.xz"),
             data,
         );
+        let digest = image.digest.clone().unwrap();
         let unlisted = format!("{HAOS_DOWNLOADS}/18.5/haos_tinker-18.5.img.xz");
         server.mock("GET", "/tags/18.5").with_header("content-type", "application/json").with_body(serde_json::json!({
             "tag_name": "18.5", "assets": [
-                { "name": "haos_rpi5-64-18.5.img.xz", "size": data.len(), "browser_download_url": image.download_url, "digest": image.digest },
-                { "name": "haos_tinker-18.5.img.xz", "size": data.len(), "browser_download_url": unlisted, "digest": image.digest },
+                { "name": "haos_rpi5-64-18.5.img.xz", "size": data.len(), "browser_download_url": image.download_url, "digest": digest },
+                // An asset the release lists no digest for keeps none
+                { "name": "haos_tinker-18.5.img.xz", "size": data.len(), "browser_download_url": unlisted },
             ]
         }).to_string()).create_async().await;
         server
@@ -2044,10 +1905,14 @@ mod tests {
             .require_image("rpi5-64", ImageFormat::Raw)
             .unwrap()
             .clone();
+        assert_eq!(selected.digest.as_deref(), Some(digest.as_str()));
+        // [China mirror] The release's names come with the mirror's location
         assert_eq!(
-            selected.digest.as_deref(),
-            Some("sha256:79004a2fda343f7cb9e6c510bfc56acac25f684d2ad20b7b116ef17c4c4b0136")
+            selected.download_url,
+            format!("{OTA_MIRROR}/18.5/haos_rpi5-64-18.5.img.xz")
         );
+        // A digest that disagrees with the file stops the download
+        selected.digest = Some(format!("sha256:{}", "00".repeat(32)));
         selected.download_url = format!("{url}/image.xz");
         let directory = tempfile::tempdir().unwrap();
         let destination = directory.path().join("image.xz");
@@ -2357,6 +2222,7 @@ mod tests {
         failed.assert_async().await;
         failed.remove_async().await;
         let download_url = format!("{HAOS_DOWNLOADS}/18.5/haos_rpi5-64-18.5.img.xz");
+        let digest = format!("sha256:{}", "11".repeat(32));
         let mock = server
             .mock("GET", "/tags/18.5")
             .match_header("User-Agent", USER_AGENT)
@@ -2369,6 +2235,7 @@ mod tests {
                         "name": "haos_rpi5-64-18.5.img.xz",
                         "size": 123,
                         "browser_download_url": download_url,
+                        "digest": digest,
                     }],
                 })
                 .to_string(),
@@ -2383,8 +2250,11 @@ mod tests {
         for release in [first.unwrap(), second.unwrap()] {
             assert_eq!(release.version, "18.5");
             let image = release.require_image("rpi5-64", ImageFormat::Raw).unwrap();
-            assert_eq!(image.download_url, download_url);
-            assert!(image.digest.is_some());
+            assert_eq!(
+                image.download_url,
+                format!("{OTA_MIRROR}/18.5/haos_rpi5-64-18.5.img.xz")
+            );
+            assert_eq!(image.digest.as_deref(), Some(digest.as_str()));
         }
         mock.assert_async().await;
         let other = server
@@ -2421,123 +2291,6 @@ mod tests {
         assert_eq!(std::fs::read(&destination).unwrap(), data);
         request.assert_async().await;
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
-    }
-
-    #[tokio::test]
-    async fn mirror_cache_reuses_success_per_version_and_retries_failures() {
-        // [China mirror] The same caching behavior, for the mirror's release
-        // metadata built from HEAD probes instead of a release API.
-        let mut server = mockito::Server::new_async().await;
-        let cache = Mutex::new(HashMap::new());
-        let failed = server
-            .mock("HEAD", "/18.3/haos_rpi5-64-18.3.img.xz")
-            .with_status(500)
-            .create_async()
-            .await;
-        assert!(
-            fetch_cached_release_from_mirror(&cache, &server.url(), "18.3")
-                .await
-                .is_err()
-        );
-        failed.assert_async().await;
-        failed.remove_async().await;
-        let mut url = None;
-        for version in ["18.3", "18.4"] {
-            let base = server.url();
-            let download_url = format!("{base}/{version}/haos_rpi5-64-{version}.img.xz");
-            let mock = server
-                .mock(
-                    "HEAD",
-                    format!("/{version}/haos_rpi5-64-{version}.img.xz").as_str(),
-                )
-                .with_status(200)
-                .with_header("Content-Length", "123")
-                .create_async()
-                .await;
-            let (first, second) = tokio::join!(
-                fetch_cached_release_from_mirror(&cache, &base, version),
-                fetch_cached_release_from_mirror(&cache, &base, version)
-            );
-            for release in [first.unwrap(), second.unwrap()] {
-                assert_eq!(release.version, version);
-                let image = release.require_image("rpi5-64", ImageFormat::Raw).unwrap();
-                assert_eq!(image.download_url, download_url);
-                assert_eq!(image.size, 123);
-                assert_eq!(image.digest, None);
-            }
-            mock.assert_async().await;
-            if url.is_none() {
-                url = Some(download_url);
-            }
-        }
-        assert!(url.is_some());
-    }
-
-    #[tokio::test]
-    async fn mirror_missing_assets_are_absent_however_the_error_is_served() {
-        // [China mirror] A missing file comes back as a redirect to the
-        // mirror's 404 page, and that page can also arrive as HTML with a
-        // 200. Neither may be taken for an image.
-        let mut server = mockito::Server::new_async().await;
-        let client = shared_client().unwrap();
-
-        let error_page = server
-            .mock("HEAD", "/404.html")
-            .with_status(200)
-            .with_header("Content-Type", "text/html")
-            .with_header("Content-Length", "25413")
-            .create_async()
-            .await;
-        let location = format!("{}/404.html", server.url());
-        let redirect = server
-            .mock("HEAD", "/18.4/haos_ihost-18.4.img.xz")
-            .with_status(302)
-            .with_header("Location", &location)
-            .with_header("Content-Length", "145")
-            .create_async()
-            .await;
-        assert!(
-            probe_mirror_image(client, &server.url(), "18.4", "ihost", ImageFormat::Raw)
-                .await
-                .unwrap()
-                .is_none()
-        );
-        redirect.assert_async().await;
-        error_page.assert_async().await;
-
-        let page = server
-            .mock("HEAD", "/18.4/haos_other-18.4.qcow2.xz")
-            .with_status(200)
-            .with_header("Content-Type", "text/html")
-            .with_header("Content-Length", "25413")
-            .create_async()
-            .await;
-        assert!(
-            probe_mirror_image(client, &server.url(), "18.4", "other", ImageFormat::Qcow2)
-                .await
-                .unwrap()
-                .is_none()
-        );
-        page.assert_async().await;
-
-        let real = server
-            .mock("HEAD", "/18.4/haos_other-18.4.img.xz")
-            .with_status(200)
-            .with_header("Content-Type", "application/octet-stream")
-            .with_header("Content-Length", "576777368")
-            .create_async()
-            .await;
-        let image = probe_mirror_image(client, &server.url(), "18.4", "other", ImageFormat::Raw)
-            .await
-            .unwrap()
-            .expect("a binary asset is present");
-        assert_eq!(image.size, 576_777_368);
-        assert_eq!(
-            image.download_url,
-            format!("{}/18.4/haos_other-18.4.img.xz", server.url())
-        );
-        assert_eq!(image.digest, None);
-        real.assert_async().await;
     }
 
     #[tokio::test]
@@ -2883,24 +2636,28 @@ mod tests {
                 GitHubAsset {
                     name: "haos_rpi5-64-14.2.img.xz".to_string(),
                     size: 500_000_000,
-                    browser_download_url: "https://github.com/home-assistant/operating-system/releases/download/14.2/haos_rpi5-64-14.2.img.xz".to_string(),
+                    browser_download_url: format!("{HAOS_DOWNLOADS}/14.2/haos_rpi5-64-14.2.img.xz"),
+                    digest: Some("sha256:00".to_string()),
                 },
                 GitHubAsset {
                     name: "haos_ova-14.2.qcow2.xz".to_string(),
                     size: 600_000_000,
-                    browser_download_url: "https://github.com/home-assistant/operating-system/releases/download/14.2/haos_ova-14.2.qcow2.xz".to_string(),
+                    browser_download_url: format!("{HAOS_DOWNLOADS}/14.2/haos_ova-14.2.qcow2.xz"),
+                    digest: None,
                 },
                 // Should be ignored (wrong extension)
                 GitHubAsset {
                     name: "haos_rpi5-64-14.2.img.xz.sha256".to_string(),
                     size: 100,
                     browser_download_url: "https://github.com/download/sha256".to_string(),
+                    digest: None,
                 },
                 // Should be ignored (not a HAOS image name)
                 GitHubAsset {
                     name: "invalid_filename.img.xz".to_string(),
                     size: 500_000_000,
                     browser_download_url: "https://github.com/download/invalid.img.xz".to_string(),
+                    digest: None,
                 },
             ],
         };
@@ -2913,6 +2670,13 @@ mod tests {
         let rpi_image = parsed.images.iter().find(|i| i.board == "rpi5-64").unwrap();
         assert_eq!(rpi_image.format, ImageFormat::Raw);
         assert_eq!(rpi_image.size, 500_000_000);
+        // [China mirror] The file is fetched from the mirror under the name
+        // the release lists, and the release's own digest is kept.
+        assert_eq!(
+            rpi_image.download_url,
+            format!("{OTA_MIRROR}/14.2/haos_rpi5-64-14.2.img.xz")
+        );
+        assert_eq!(rpi_image.digest.as_deref(), Some("sha256:00"));
 
         // Check x86 qcow2 image
         let x86_image = parsed.images.iter().find(|i| i.board == "ova").unwrap();
@@ -2926,6 +2690,7 @@ mod tests {
             name: name.to_string(),
             size: 1,
             browser_download_url: format!("{HAOS_DOWNLOADS}/14.2/{name}"),
+            digest: None,
         };
         let parse = |tag: &str, assets| {
             parse_github_release(

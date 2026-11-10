@@ -321,6 +321,10 @@ pub struct GitHubAsset {
     pub name: String,
     pub size: u64,
     pub browser_download_url: String,
+    /// [China mirror] GitHub's own SHA-256 of the uploaded file, as
+    /// `sha256:<hex>`; the releases this branch installs from publish one.
+    #[serde(default)]
+    pub digest: Option<String>,
 }
 
 /// GitHub release from API
