@@ -140,7 +140,9 @@ jobs:
       # separately, by the tag rulesets.
       - name: Check the run is on main
         run: |
-          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+          # [China mirror] This branch is the one that ships here; main is
+          # upstream's own, without the mirrors and the Chinese catalog.
+          if [[ "$GITHUB_REF" != refs/heads/main && "$GITHUB_REF" != refs/heads/China ]]; then
             echo "::error::Releases are made from main, not $GITHUB_REF"
             exit 1
           fi
