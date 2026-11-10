@@ -103,19 +103,15 @@ pub async fn fetch_haos<B: ReleaseSource, P: ProgressCallback>(
     let version = release.version.clone();
     // The version becomes a folder name.
     if parse_version(&version).is_none() {
-        return Err(Error::LiveUsbReleaseUnusable(format!(
+        return Err(Error::ReleaseUnusable(format!(
             "unexpected version {version:?}"
         )));
     }
-    let image = release
-        .image_for(HAOS_BOARD, ImageFormat::Raw)
-        .ok_or_else(|| {
-            Error::LiveUsbReleaseUnusable(format!("{version} has no generic x86-64 image"))
-        })?;
+    let image = release.require_image(HAOS_BOARD, ImageFormat::Raw)?;
     // [China mirror] The mirror does not carry the release's signed
-    // SHA256SUMS, so mirrored images may have no digest. The download then
-    // relies on HTTPS and the XZ integrity checks, and cache validation
-    // compares the SHA-256 of the stored file itself.
+    // SHA256SUMS, so a mirrored image may have no digest. The download then
+    // relies on HTTPS and the XZ integrity checks, and the hash below is
+    // taken from the file that is kept.
     let referenced = expected_sha256(image).ok().map(hex::encode);
 
     let path = cache
@@ -154,6 +150,9 @@ async fn fetch<B: ReleaseSource, P: ProgressCallback>(
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
+    // What the other flows left goes before this build's own files
+    let downloads = backend.cache_dir()?;
+    crate::download::make_room(&downloads, &downloads.join(FOLDER), image.size).await?;
     // Verifies size and SHA-256, and only moves the file into place once both match.
     backend.download_image(image, path, progress).await?;
     Ok(())
