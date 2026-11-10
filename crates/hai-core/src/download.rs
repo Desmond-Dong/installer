@@ -237,7 +237,11 @@ const VERSION_URL: &str = "https://version.hasscn.top/stable.json";
 /// `{version}/{asset_name}`, mirroring the names of the official release.
 const OTA_MIRROR: &str = "https://ota.hasscn.top";
 
-/// GitHub API URL for HAOS releases
+/// GitHub API URL for HAOS releases.
+///
+/// [China mirror] Kept for reference and tests; release metadata on this
+/// branch comes from the mirror instead of the GitHub API.
+#[allow(dead_code)]
 const HAOS_RELEASES_API: &str =
     "https://api.github.com/repos/home-assistant/operating-system/releases";
 
@@ -2454,7 +2458,7 @@ mod tests {
             );
             for release in [first.unwrap(), second.unwrap()] {
                 assert_eq!(release.version, version);
-                let image = release.image_for("rpi5-64", ImageFormat::Raw).unwrap();
+                let image = release.require_image("rpi5-64", ImageFormat::Raw).unwrap();
                 assert_eq!(image.download_url, download_url);
                 assert_eq!(image.size, 123);
                 assert_eq!(image.digest, None);
