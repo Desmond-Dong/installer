@@ -385,7 +385,6 @@
   "views.sbc.progress_view.writing_the_installer_to_your_drive": "正在将安装器写入你的硬盘",
   "views.ha_hardware.success_view.subtitle": "安装器已写入你的硬盘",
   "views.ha_hardware.success_view.full_instructions": "{device} 完整说明",
-  "views.ha_hardware.success_view.green_keep_internet": "重置期间 Green 需要联网。请保持其网线连接网络。",
   "views.ha_hardware.success_view.green_shut_down": "关闭 Home Assistant：进入「设置 > 系统」，打开三点菜单，选择「重新启动」，然后选择「关闭系统」。等待所有 LED 熄灭，或长按电源键 6 秒。然后拔下电源线。",
   "views.ha_hardware.success_view.green_insert_card": "将 microSD 卡插入 Green，直到卡到位。",
   "views.ha_hardware.success_view.green_power_on": "接通电源并按下电源键。Home Assistant OS 写入内部存储期间，黄色 LED 会快速闪烁。",
@@ -635,8 +634,6 @@
   "common.success.almost_there": "就快完成了！",
   "common.success.do_not_format.macos": "macOS 可能提示无法读取该磁盘，因为它不认识 Home Assistant 分区。请选择「推出」而不是「初始化」。",
   "common.success.do_not_format.windows": "Windows 可能询问是否格式化该硬盘，因为它不认识 Home Assistant 分区。请选择「取消」。",
-  "common.success.step_next": "设备开机后，选择「下一步」跟随它安装最新版 Home Assistant。根据网络情况大约需要 20 分钟。就绪之前请保持电源和网线连接。",
-  "common.success.step_next_wifi": "设备开机后，选择「下一步」跟随它安装最新版 Home Assistant。根据网络情况大约需要 20 分钟。就绪之前请保持设备通电。",
   "views.utm.utm_check_view.testing_note": "适合试用 Home Assistant。它只在你的 Mac 开机且已登录时运行；日常使用建议专用硬件。",
   "views.utm.utm_check_view.allow_control_needed": "创建虚拟机需要安装器控制 UTM。允许后 UTM 会打开，macOS 会请求你的授权。",
   "views.utm.utm_check_view.allow_control": "允许控制 UTM",
@@ -728,5 +725,9 @@
   "views.sbc.confirmation_view.emmc_subtitle": "这会把最新版 Home Assistant 安装到你的 {device} 上。",
   "utils.installer_error.installer_updating": "安装器正在自我更新。请等它重启后重试。",
   "backend.download.github_invalid_response": "GitHub 返回了意外的发布信息。请稍后重试。",
-  "backend.download.image_unavailable": "下载服务器无法提供该镜像（HTTP {status}）。请稍后重试。"
+  "backend.download.image_unavailable": "下载服务器无法提供该镜像（HTTP {status}）。请稍后重试。",
+  "components.wizard_steps.choose_another_name": "选择其它名称",
+  "views.ha_hardware.success_view.backup_first": "可选：如需保留数据，请先在 Home Assistant 中创建备份并下载到另一台电脑。{link}",
+  "views.ha_hardware.success_view.backup_guide": "如何备份数据",
+  "backend.utm.vm_name_taken": "UTM 中已有名为「{name}」的虚拟机。请换一个名称，或先在 UTM 中移除那台虚拟机。"
 }

@@ -113,7 +113,8 @@ pub trait DeviceBackend {
     /// List block devices, subject to platform-specific filtering.
     async fn list_devices(&self) -> Result<Vec<BlockDevice>>;
 
-    /// Write an image to the device with this id, reporting progress.
+    /// Write an image to the device with this id, reporting progress, and
+    /// eject it. Whether it was ejected; if not, the user has to.
     ///
     /// Re-checks the expected identity. Platform safety checks do not replace
     /// caller validation of removability.
@@ -124,7 +125,7 @@ pub trait DeviceBackend {
         expected: &ExpectedDevice,
         verify: bool,
         progress_callback: &P,
-    ) -> Result<()>;
+    ) -> Result<bool>;
 }
 
 /// Proxmox VE provisioning.
@@ -217,6 +218,10 @@ pub trait UtmBackend {
     /// Whether macOS lets the installer control UTM. Asking for the first
     /// time shows the Automation prompt, and opens UTM.
     fn check_automation(&self) -> Result<()>;
+
+    /// Refuse a VM name UTM already has, with [`Error::UtmVmNameTaken`].
+    /// UTM would only refuse it once the image is downloaded and copied.
+    fn check_vm_name(&self, name: &str) -> Result<()>;
 
     /// Create a Home Assistant VM in UTM, reporting progress.
     async fn create_vm<P: ProgressCallback>(

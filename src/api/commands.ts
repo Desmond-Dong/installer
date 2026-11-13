@@ -331,6 +331,7 @@ async function simulateFlashProgress(
 
   return {
     duration_secs: 45,
+    ejected: true,
   };
 }
 
@@ -423,6 +424,18 @@ export async function checkUtmStatus(): Promise<UtmStatus> {
 export async function checkUtmAutomation(): Promise<void> {
   if (MOCK_ALLOWED && isBrowserOnly()) return;
   return invoke<void>("check_utm_automation");
+}
+
+/**
+ * Refuse a VM name UTM already has, with a `utm_vm_name_taken` error. UTM
+ * itself only refuses it once the image is downloaded.
+ */
+export async function checkUtmVmName(name: string): Promise<void> {
+  if (MOCK_ALLOWED && isBrowserOnly()) {
+    failMockOperation("utm-name");
+    return;
+  }
+  return invoke<void>("check_utm_vm_name", { name });
 }
 
 /** Forget a downloaded image which was not consumed by VM creation. */
