@@ -23,7 +23,6 @@ import "../views/ha-hardware/connect-view.js";
 import "../views/ha-hardware/success-view.js";
 import "../views/minipc/setup-method-view.js";
 import "../views/minipc/architecture-selection-view.js";
-import "../views/minipc/media-view.js";
 import "../views/live-usb/live-usb-gate.js";
 import "../views/live-usb/live-iso-location-view.js";
 import "../views/live-usb/live-usb-summary-view.js";
@@ -82,8 +81,8 @@ export interface InstallStep {
   stopMessage(selections: WizardSelections): string;
   /**
    * Once the install failed or was stopped, Back returns to the step
-   * before, to change a choice and install again. Without it, Back stays
-   * hidden.
+   * before, to change a choice and install again. Without it, Back shows
+   * only after a failure that the view says choosing differently fixes.
    */
   backAfterError?: boolean;
   /**
@@ -359,10 +358,6 @@ const isoFile = (selections: WizardSelections) =>
 
 /** The Mini PC steps after choosing to boot from USB, where they differ. */
 export const LIVE_USB_STEPS: Record<string, WizardStepDefinition> = {
-  media: {
-    render: () => html`<minipc-media-view></minipc-media-view>`,
-    pickToContinue: true,
-  },
   drive: {
     render: () =>
       html`<live-usb-gate

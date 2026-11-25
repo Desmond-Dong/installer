@@ -69,10 +69,10 @@ pub trait ReleaseSource {
     /// Fetch the device manifest (list of supported boards).
     async fn get_device_manifest(&self) -> Result<DeviceManifest>;
 
-    /// Fetch a HAOS release by version, or the latest when `version == "latest"`.
-    async fn get_haos_release(&self, version: &str) -> Result<HaosRelease>;
-
     /// Fetch the release stable.json currently lists for `board`.
+    ///
+    /// [China mirror] This branch's release comes from ha-china/HAOS-CN's
+    /// regular images, not home-assistant's full images.
     async fn get_latest_haos_release_for_board(&self, board: &str) -> Result<HaosRelease>;
 
     /// Download an image to `dest_path`, verifying its trusted compressed-asset digest.
@@ -251,6 +251,10 @@ pub trait HostBackend {
     /// What Supervisor reports while it installs Core at `ip`, or `None`
     /// without a full answer from a landing page there.
     async fn ha_setup_status(&self, ip: &str) -> Option<HaSetupStatus>;
+
+    /// Whether Home Assistant at `ip` is onboarded, or `None` without an
+    /// answer that tells.
+    async fn ha_onboarded(&self, ip: &str) -> Option<bool>;
 
     /// The Home Assistants that announce themselves on the local network,
     /// as far as they answer within a few seconds.

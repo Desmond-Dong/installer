@@ -4,6 +4,8 @@ import {
   approveProxmoxImport,
   test,
   expect,
+  MOCK_DELAY_SCALE,
+  setMockDelayScale,
   skipWifiStep,
 } from "./fixtures.js";
 
@@ -11,6 +13,8 @@ test.use({ platform: "macos" });
 
 const next = (page: Page) =>
   page.locator("wizard-shell .footer-right wa-button");
+const back = (page: Page) =>
+  page.getByRole("button", { name: "Back", exact: true });
 
 // Recovery follows each error's retryability: a retry, picking the drive
 // or VM name again, or only cancelling when a retry could repeat a hidden VM
@@ -51,6 +55,14 @@ for (const scenario of [
     message:
       "The image could not be downloaded. Check your connection and try again.",
     recovery: "retry",
+  },
+  // Proxmox gave the VM ID away while the image downloaded: trying again
+  // works once it is free, and Back leads to choosing another one
+  {
+    failure: "proxmox-download-vm-id-taken",
+    flow: "proxmox",
+    message: "VM ID 100 can't be used. Choose a different ID.",
+    recovery: "back",
   },
   {
     failure: "utm-create",
@@ -126,6 +138,9 @@ for (const scenario of [
       await expect(next(page)).toHaveText("Choose another drive");
     } else if (scenario.recovery === "choose-name") {
       await expect(next(page)).toHaveText("Choose another name");
+    } else if (scenario.recovery === "back") {
+      await expect(next(page)).toHaveText("Try again");
+      await expect(back(page)).toBeVisible();
     } else {
       await expect(next(page)).not.toBeVisible();
     }
@@ -148,6 +163,12 @@ for (const scenario of [
       await expect(page.locator("path-selection-view")).toBeVisible();
       return;
     }
+    if (scenario.recovery === "back") {
+      await back(page).click();
+      await expect(page.locator("proxmox-confirm-view")).toBeVisible();
+    }
+    // The install that follows is checked while it runs
+    await setMockDelayScale(page, 1);
     await next(page).click();
     if (scenario.recovery === "choose-drive") {
       await page.locator("drive-selection-view drive-card").first().click();
@@ -183,6 +204,7 @@ for (const scenario of [
       await expect(progress).toBeVisible();
       await expect(page.locator("wizard-shell .footer-left")).toBeVisible();
     }
+    await setMockDelayScale(page, MOCK_DELAY_SCALE);
     await expect(page.locator(`${prefix}success-view`)).toBeVisible({
       timeout: 45000,
     });
